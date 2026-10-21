@@ -99,6 +99,16 @@ func convertLocalArchive(ctx context.Context, input, output string, opts Archive
 			if err != nil {
 				return result, err
 			}
+			originalFormat, err := archiveFormat(previousFileMetadata["format"])
+			if err != nil {
+				return result, err
+			}
+			if targetFormat == "" {
+				targetFormat = originalFormat
+			}
+			if originalFormat != "" && targetFormat != originalFormat {
+				return result, fmt.Errorf("directory append cannot change the existing tile format")
+			}
 			oldPattern, e := normalizeTilePath(previousFileMetadata["tile_path"])
 			if e != nil {
 				return result, e
@@ -164,7 +174,8 @@ func convertLocalArchive(ctx context.Context, input, output string, opts Archive
 			return err
 		}
 		walker := archiveWalkLocal
-		if existing && opts.Append && !keepExisting {
+		existingInput := existing && opts.Append && !keepExisting
+		if existingInput {
 			walker = func(ctx context.Context, path, pattern string, visit archiveVisit) (map[string]string, error) {
 				switch kind {
 				case "mbtiles":
@@ -177,7 +188,14 @@ func convertLocalArchive(ctx context.Context, input, output string, opts Archive
 			}
 		}
 		incomingMetadata, err := walker(ctx, path, pattern, func(z int, x, y uint32, body []byte, sourceFormat string) error {
+			if _, err := tx.ExecContext(ctx, "INSERT INTO input_seen(z,x,y) VALUES(?,?,?)", z, x, y); err != nil {
+				return fmt.Errorf("duplicate input tile coordinate %d/%d/%d: %w", z, x, y, err)
+			}
 			if sourceFormat == "" {
+				// An extensionless empty placeholder has no detectable encoding.
+				if existingInput && len(body) == 0 {
+					return nil
+				}
 				sourceFormat, err = archiveInferFormat(body)
 				if err != nil && targetFormat == PBF {
 					sourceFormat, err = PBF, nil
@@ -195,8 +213,10 @@ func convertLocalArchive(ctx context.Context, input, output string, opts Archive
 			if opts.Format == "" && targetFormat != sourceFormat {
 				return fmt.Errorf("mixed tile formats; set -format to choose the target encoding")
 			}
-			if _, err := tx.ExecContext(ctx, "INSERT INTO input_seen(z,x,y) VALUES(?,?,?)", z, x, y); err != nil {
-				return fmt.Errorf("duplicate input tile coordinate %d/%d/%d: %w", z, x, y, err)
+			// Keep path/format validation for old empty tiles: silently retaining
+			// a differently named placeholder would create duplicate coordinates.
+			if existingInput && len(body) == 0 {
+				return nil
 			}
 			prepared, err := archivePrepareTileData(body, sourceFormat, targetFormat)
 			if err != nil {
@@ -222,6 +242,14 @@ func convertLocalArchive(ctx context.Context, input, output string, opts Archive
 		if err != nil {
 			return err
 		}
+		if existingInput && targetFormat == "" {
+			// Preserve the declared format even when all previous tiles were
+			// empty and therefore could not establish it from their bytes.
+			targetFormat, err = archiveFormat(incomingMetadata["format"])
+			if err != nil {
+				return err
+			}
+		}
 		if metadata == nil {
 			metadata = incomingMetadata
 		} else {
@@ -239,12 +267,6 @@ func convertLocalArchive(ctx context.Context, input, output string, opts Archive
 		}
 		if err := importOne(destination, basePattern, false); err != nil {
 			return result, fmt.Errorf("read existing output: %w", err)
-		}
-		if kind == "file" && targetFormat != "" && opts.Format != "" {
-			originalFormat, _ := archiveFormat(previousFileMetadata["format"])
-			if originalFormat != "" && originalFormat != targetFormat {
-				return result, fmt.Errorf("directory append cannot change the existing tile format")
-			}
 		}
 	}
 	if err := importOne(input, opts.InputTilePath, opts.Append && existing); err != nil {

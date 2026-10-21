@@ -276,8 +276,25 @@ func validateFailureManifestSafety(path string) error {
 }
 
 func sameFailureTarget(a, b FailureTarget) bool {
-	if a.Kind != b.Kind || a.Path != b.Path || a.Bucket != b.Bucket || a.Prefix != b.Prefix || a.EndpointFingerprint != b.EndpointFingerprint {
+	if a.Kind != b.Kind || a.Bucket != b.Bucket || a.Prefix != b.Prefix || a.EndpointFingerprint != b.EndpointFingerprint {
 		return false
+	}
+	if a.Path != b.Path {
+		if a.Kind != "file" && a.Kind != "mbtiles" {
+			return false
+		}
+		// Existing local targets can have multiple names, including different
+		// casing on Windows. Confirm identity rather than guessing from text.
+		original, originalErr := os.Stat(a.Path)
+		current, currentErr := os.Stat(b.Path)
+		if originalErr != nil || currentErr != nil || !os.SameFile(original, current) {
+			return false
+		}
+		// SQLite sidecars use the filename, not the database's file ID. An
+		// alias could otherwise open the main file without its committed WAL.
+		if a.Kind == "mbtiles" && (checkSQLiteSidecars(a.Path) != nil || checkSQLiteSidecars(b.Path) != nil) {
+			return false
+		}
 	}
 	if a.Kind == "file" || a.Kind == "s3" {
 		ap, aerr := normalizeTilePath(a.TilePath)

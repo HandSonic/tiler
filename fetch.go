@@ -17,8 +17,12 @@ func validateTileURL(raw string) error {
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 		return fmt.Errorf("tile URL must be a valid HTTP(S) URL")
 	}
-	if host := u.Hostname(); host == "tianditu.gov.cn" || strings.HasSuffix(host, ".tianditu.gov.cn") {
-		if strings.HasSuffix(strings.ToLower(u.Query().Get("T")), "_c") {
+	query, err := url.ParseQuery(u.RawQuery)
+	if err != nil {
+		return fmt.Errorf("tile URL query must use valid URL encoding: %w", err)
+	}
+	if host := strings.ToLower(u.Hostname()); host == "tianditu.gov.cn" || strings.HasSuffix(host, ".tianditu.gov.cn") {
+		if strings.HasSuffix(strings.ToLower(query.Get("T")), "_c") {
 			return fmt.Errorf("Tianditu *_c uses a geographic tile matrix, which is unsupported; use the corresponding *_w Web Mercator layer")
 		}
 	}
@@ -34,7 +38,7 @@ func (task *Task) fetchTile(ctx context.Context, tileURL string) ([]byte, error)
 		req.Header.Set("User-Agent", task.userAgent)
 		if task.referer != "" {
 			req.Header.Set("Referer", task.referer)
-		} else if host := req.URL.Hostname(); host == "tianditu.gov.cn" || strings.HasSuffix(host, ".tianditu.gov.cn") {
+		} else if host := strings.ToLower(req.URL.Hostname()); host == "tianditu.gov.cn" || strings.HasSuffix(host, ".tianditu.gov.cn") {
 			req.Header.Set("Referer", "https://map.tianditu.gov.cn")
 		}
 		resp, err := task.httpClient.Do(req)

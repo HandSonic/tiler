@@ -50,6 +50,75 @@ func repairIntegrationReadTile(t *testing.T, kind, path string, tile maptile.Til
 	return data
 }
 
+func TestResumeAcceptsExistingDatabasePathAlias(t *testing.T) {
+	dir := configureRegressionOutput(t)
+	viper.Set("output.format", "mbtiles")
+	viper.Set("output.name", "original")
+	manifestPath := filepath.Join(dir, "failures.json")
+	viper.Set("output.failure_file", manifestPath)
+	var available atomic.Bool
+	var requests atomic.Int32
+	body := tileDataPNG(t)
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		if !available.Load() {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		w.Write(body)
+	}))
+	defer source.Close()
+	first := newRegressionTask(t, source.URL)
+	if err := first.Download(); err == nil {
+		t.Fatal("initial unavailable tile was accepted")
+	}
+	alias := filepath.Join(dir, "alias.mbtiles")
+	if err := os.Link(first.File, alias); err != nil {
+		t.Skipf("hard links unavailable: %v", err)
+	}
+	available.Store(true)
+	viper.Set("output.resume", true)
+	viper.Set("output.name", "alias")
+	resumed := newRegressionTask(t, source.URL)
+	if err := resumed.Download(); err != nil {
+		t.Fatalf("resume rejected the same existing database through another name: %v", err)
+	}
+	if requests.Load() != 2 || !bytes.Equal(repairIntegrationReadTile(t, "mbtiles", first.File, maptile.Tile{Z: 0}), body) {
+		t.Fatalf("resume did not repair the original database: requests=%d", requests.Load())
+	}
+	manifest, err := LoadFailureManifest(manifestPath)
+	if err != nil || manifest.Len() != 0 {
+		t.Fatalf("resume did not clear the failure report: %v", err)
+	}
+	// Equal contents in a different file do not establish target identity.
+	copyPath := filepath.Join(dir, "copy.mbtiles")
+	encoded, err := os.ReadFile(first.File)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(copyPath, encoded, 0600); err != nil {
+		t.Fatal(err)
+	}
+	viper.Set("output.name", "copy")
+	different := newRegressionTask(t, source.URL)
+	if err := different.Download(); err == nil || !strings.Contains(err.Error(), "different output target") || requests.Load() != 2 {
+		t.Fatalf("different database was accepted as an alias: %v, requests=%d", err, requests.Load())
+	}
+}
+
+func TestResumeRejectsDatabaseAliasWithActiveSidecar(t *testing.T) {
+	_, original := archiveUploadWALDatabase(t)
+	alias := filepath.Join(filepath.Dir(original), "alias.mbtiles")
+	if err := os.Link(original, alias); err != nil {
+		t.Skipf("hard links unavailable: %v", err)
+	}
+	for _, paths := range [][2]string{{original, alias}, {alias, original}} {
+		if sameFailureTarget(FailureTarget{Kind: "mbtiles", Path: paths[0]}, FailureTarget{Kind: "mbtiles", Path: paths[1]}) {
+			t.Fatal("database alias accepted although its other name has a live WAL")
+		}
+	}
+}
+
 func TestRepairLocalOutputOnlyRetriesManifestAndPreservesOriginalTarget(t *testing.T) {
 	for _, kind := range []string{"file", "mbtiles"} {
 		t.Run(kind, func(t *testing.T) {

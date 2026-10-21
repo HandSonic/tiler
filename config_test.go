@@ -26,9 +26,11 @@ func TestBoundsAndZoomMetadataFollowLayers(t *testing.T) {
 }
 
 func TestUnsupportedProjectionHasActionableError(t *testing.T) {
-	err := validateTileURL("https://t0.tianditu.gov.cn/DataServer?T=vec_c&x={x}&y={y}&l={z}")
-	if err == nil || !strings.Contains(err.Error(), "*_w") {
-		t.Fatalf("error=%v", err)
+	for _, host := range []string{"t0.tianditu.gov.cn", "T0.TIANDITU.GOV.CN"} {
+		err := validateTileURL("https://" + host + "/DataServer?T=vec_c&x={x}&y={y}&l={z}")
+		if err == nil || !strings.Contains(err.Error(), "*_w") {
+			t.Fatalf("host=%s error=%v", host, err)
+		}
 	}
 	if err := validateTileURL("https://t0.tianditu.gov.cn/DataServer?T=vec_w&x={x}&y={y}&l={z}"); err != nil {
 		t.Fatal(err)

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"database/sql"
@@ -194,20 +195,31 @@ func archiveS3Head(ctx context.Context, out *s3Output, key string) (*s3.HeadObje
 
 // Explicit output kinds allow an archive to have an arbitrary object key. A
 // trailing slash always selects loose tiles; other ambiguous keys are sniffed
-// using a bounded range read so those outputs can be used as inputs again.
+// using a bounded header read so those outputs can be used as inputs again.
 func archiveS3DetectArchiveKind(ctx context.Context, out *s3Output, key string) (string, error) {
-	_, exists, err := archiveS3Head(ctx, out, key)
+	head, exists, err := archiveS3Head(ctx, out, key)
 	if err != nil || !exists {
 		return "", err
 	}
 	request, cancel := context.WithTimeout(ctx, out.timeout)
 	defer cancel()
-	object, err := out.client.GetObject(request, &s3.GetObjectInput{Bucket: aws.String(out.bucket), Key: aws.String(key), Range: aws.String("bytes=0-15")})
+	input := &s3.GetObjectInput{Bucket: aws.String(out.bucket), Key: aws.String(key)}
+	// A range addresses encoded object bytes, not the decoded archive header.
+	// For gzip, read only the decoded prefix from a normal streaming GET.
+	if !strings.EqualFold(strings.TrimSpace(aws.ToString(head.ContentEncoding)), "gzip") {
+		input.Range = aws.String("bytes=0-15")
+	}
+	object, err := out.client.GetObject(request, input)
 	if err != nil {
 		return "", fmt.Errorf("inspect S3 archive %q: %w", key, err)
 	}
 	defer object.Body.Close()
-	header, err := io.ReadAll(io.LimitReader(object.Body, 16))
+	decoded, err := archiveS3DecodeContent(object.Body, aws.ToString(object.ContentEncoding))
+	if err != nil {
+		return "", err
+	}
+	defer decoded.Close()
+	header, err := io.ReadAll(io.LimitReader(decoded, 16))
 	if err != nil {
 		return "", fmt.Errorf("inspect S3 archive %q: %w", key, err)
 	}
@@ -229,11 +241,17 @@ func archiveS3Download(ctx context.Context, out *s3Output, key, filename string)
 		return fmt.Errorf("read S3 archive %q: %w", key, err)
 	}
 	defer object.Body.Close()
+	encoded := &archiveS3CountingReader{Reader: object.Body}
+	decoded, err := archiveS3DecodeContent(encoded, aws.ToString(object.ContentEncoding))
+	if err != nil {
+		return fmt.Errorf("read S3 archive %q: %w", key, err)
+	}
+	defer decoded.Close()
 	file, err := os.OpenFile(filename, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 	if err != nil {
 		return err
 	}
-	err = archiveCopy(request, file, object.Body)
+	err = archiveCopy(request, file, decoded)
 	closeErr := file.Close()
 	if err != nil {
 		return fmt.Errorf("download S3 archive %q: %w", key, err)
@@ -242,23 +260,47 @@ func archiveS3Download(ctx context.Context, out *s3Output, key, filename string)
 		return closeErr
 	}
 	if object.ContentLength != nil && *object.ContentLength >= 0 {
-		info, err := os.Stat(filename)
-		if err != nil {
-			return err
-		}
-		if info.Size() != *object.ContentLength {
+		if encoded.bytes != *object.ContentLength {
 			return fmt.Errorf("S3 archive %q was truncated", key)
 		}
 	}
 	return nil
 }
 
+type archiveS3CountingReader struct {
+	io.Reader
+	bytes int64
+}
+
+func (reader *archiveS3CountingReader) Read(p []byte) (int, error) {
+	n, err := reader.Reader.Read(p)
+	reader.bytes += int64(n)
+	return n, err
+}
+
+// S3's SDK returns encoded object bytes. Decode the HTTP representation before
+// parsing tiles or metadata; PBF's own content compression is handled separately.
+func archiveS3DecodeContent(body io.Reader, encoding string) (io.ReadCloser, error) {
+	switch strings.ToLower(strings.TrimSpace(encoding)) {
+	case "", "identity":
+		return io.NopCloser(body), nil
+	case "gzip":
+		reader, err := gzip.NewReader(body)
+		if err != nil {
+			return nil, fmt.Errorf("decode S3 gzip content: %w", err)
+		}
+		return reader, nil
+	default:
+		return nil, fmt.Errorf("unsupported S3 Content-Encoding %q; supported: identity and gzip", encoding)
+	}
+}
+
 func archiveS3ReadObject(ctx context.Context, out *s3Output, key string, limit int64) ([]byte, error) {
-	body, _, err := archiveS3ReadObjectVersion(ctx, out, key, limit, "")
+	body, _, _, err := archiveS3ReadObjectVersion(ctx, out, key, limit, "")
 	return body, err
 }
 
-func archiveS3ReadObjectVersion(ctx context.Context, out *s3Output, key string, limit int64, expectedETag string) ([]byte, map[string]string, error) {
+func archiveS3ReadObjectVersion(ctx context.Context, out *s3Output, key string, limit int64, expectedETag string) ([]byte, map[string]string, string, error) {
 	request, cancel := context.WithTimeout(ctx, out.timeout)
 	defer cancel()
 	input := &s3.GetObjectInput{Bucket: aws.String(out.bucket), Key: aws.String(key)}
@@ -267,23 +309,51 @@ func archiveS3ReadObjectVersion(ctx context.Context, out *s3Output, key string, 
 	}
 	object, err := out.client.GetObject(request, input)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, "", err
 	}
 	defer object.Body.Close()
 	if actual := aws.ToString(object.ETag); expectedETag != "" && actual != "" && actual != expectedETag {
-		return nil, nil, fmt.Errorf("S3 object %q changed since it was listed", key)
+		return nil, nil, "", fmt.Errorf("S3 object %q changed since it was listed", key)
 	}
 	if object.ContentLength != nil && *object.ContentLength > limit {
-		return nil, nil, fmt.Errorf("S3 object %q exceeds %d bytes", key, limit)
+		return nil, nil, "", fmt.Errorf("S3 object %q exceeds %d bytes", key, limit)
 	}
-	body, err := io.ReadAll(io.LimitReader(object.Body, limit+1))
+	encoded := &archiveS3CountingReader{Reader: io.LimitReader(object.Body, limit+1)}
+	contentEncoding := aws.ToString(object.ContentEncoding)
+	decoded, err := archiveS3DecodeContent(encoded, contentEncoding)
+	if decoded != nil {
+		defer decoded.Close()
+	}
+	if encoded.bytes > limit {
+		return nil, nil, "", fmt.Errorf("S3 object %q exceeds %d encoded bytes", key, limit)
+	}
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, "", err
+	}
+	body, err := io.ReadAll(io.LimitReader(decoded, limit+1))
+	if encoded.bytes > limit {
+		return nil, nil, "", fmt.Errorf("S3 object %q exceeds %d encoded bytes", key, limit)
+	}
+	if err != nil {
+		return nil, nil, "", err
 	}
 	if int64(len(body)) > limit {
-		return nil, nil, fmt.Errorf("S3 object %q exceeds %d bytes", key, limit)
+		return nil, nil, "", fmt.Errorf("S3 object %q exceeds %d bytes", key, limit)
 	}
-	return body, object.Metadata, nil
+	return body, object.Metadata, contentEncoding, nil
+}
+
+func archiveS3InferFormat(body []byte, contentEncoding string) (string, error) {
+	format, err := archiveInferFormat(body)
+	// Legacy unmarked vector objects used their gzip layer as the format hint.
+	// Preserve that hint after HTTP decoding; normal tile validation still runs.
+	if err != nil && strings.EqualFold(strings.TrimSpace(contentEncoding), "gzip") {
+		if _, err := prepareTileData(body, PBF, false); err != nil {
+			return "", err
+		}
+		return PBF, nil
+	}
+	return format, err
 }
 
 func archiveS3Metadata(ctx context.Context, out *s3Output, prefix string) (map[string]string, bool, error) {
@@ -414,7 +484,7 @@ func archiveS3TilesToMBTiles(ctx context.Context, out *s3Output, prefix, filenam
 		if size > maxTileDataBytes {
 			return fmt.Errorf("S3 tile %q exceeds the 64 MiB limit", key)
 		}
-		body, identity, err := archiveS3ReadObjectVersion(ctx, out, key, maxTileDataBytes, etag)
+		body, identity, contentEncoding, err := archiveS3ReadObjectVersion(ctx, out, key, maxTileDataBytes, etag)
 		if err != nil {
 			return fmt.Errorf("read S3 tile %q: %w", key, err)
 		}
@@ -441,7 +511,7 @@ func archiveS3TilesToMBTiles(ctx context.Context, out *s3Output, prefix, filenam
 				return err
 			}
 			if sourceFormat == "" {
-				sourceFormat, err = archiveInferFormat(body)
+				sourceFormat, err = archiveS3InferFormat(body, contentEncoding)
 				if err != nil && target == "" {
 					return err
 				}
@@ -580,7 +650,7 @@ func archiveS3ConvertToTiles(ctx context.Context, out *s3Output, input, prefix, 
 		if err != nil {
 			return err
 		}
-		if !matched || size <= 0 {
+		if !matched {
 			return nil
 		}
 		if format != "" {
@@ -604,6 +674,9 @@ func archiveS3ConvertToTiles(ctx context.Context, out *s3Output, input, prefix, 
 		}
 		if relative != canonical {
 			return fmt.Errorf("existing S3 tile %q uses a noncanonical key; convert the complete dataset to a new prefix before extending it", relative)
+		}
+		if size <= 0 {
+			return nil
 		}
 		if firstExisting == nil {
 			copy := tile
@@ -635,11 +708,11 @@ func archiveS3ConvertToTiles(ctx context.Context, out *s3Output, input, prefix, 
 			}
 		}
 		if listedFormat == "" {
-			body, err := archiveS3ReadObject(ctx, out, key, maxTileDataBytes)
+			body, _, contentEncoding, err := archiveS3ReadObjectVersion(ctx, out, key, maxTileDataBytes, "")
 			if err != nil {
 				return result, err
 			}
-			listedFormat, err = archiveInferFormat(body)
+			listedFormat, err = archiveS3InferFormat(body, contentEncoding)
 			if err != nil {
 				return result, fmt.Errorf("existing extensionless S3 tiles need a format in metadata.json: %w", err)
 			}
@@ -698,11 +771,11 @@ func archiveS3ConvertToTiles(ctx context.Context, out *s3Output, input, prefix, 
 			// first tile's detected encoding cannot describe every retained
 			// tile. Check those legacy payloads before publishing one format.
 			if pathFormat == "" && !hasDeclaredFormat && head.Metadata["tiler-format"] == "" {
-				body, _, err := archiveS3ReadObjectVersion(ctx, out, key, maxTileDataBytes, aws.ToString(head.ETag))
+				body, _, contentEncoding, err := archiveS3ReadObjectVersion(ctx, out, key, maxTileDataBytes, aws.ToString(head.ETag))
 				if err != nil {
 					return fmt.Errorf("read existing S3 tile %q: %w", key, err)
 				}
-				format, err := archiveInferFormat(body)
+				format, err := archiveS3InferFormat(body, contentEncoding)
 				if err != nil || !sameS3TileEncoding(format, result.Format) {
 					return fmt.Errorf("existing S3 tile %q has a different or invalid format; use a new output prefix", key)
 				}

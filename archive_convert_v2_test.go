@@ -122,6 +122,59 @@ func TestArchiveV2LocalRoundTripMatrixAndCustomPaths(t *testing.T) {
 	}
 }
 
+func TestArchiveV2PMMetadataTypesSurviveIntermediateFormats(t *testing.T) {
+	ctx := context.Background()
+	input := t.TempDir()
+	archiveTestWrite(t, filepath.Join(input, "0", "0", "0.png"), tileDataPNG(t))
+	custom := `{"custom_bool":true,"custom_array":[1,false],"custom_obj":{"id":9007199254740993},"custom_number":9007199254740993,"custom_label":"original","json":{"nested":true}}`
+	archiveTestWrite(t, filepath.Join(input, "metadata.json"), []byte(`{"json":`+custom+`}`))
+	source := filepath.Join(t.TempDir(), "source.pmtiles")
+	if _, err := ConvertArchive(ctx, input, source, ArchiveConvertOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	var expected map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(custom), &expected); err != nil {
+		t.Fatal(err)
+	}
+	expected["custom_label"] = json.RawMessage(`"replacement"`)
+	for _, kind := range []string{"mbtiles", "file"} {
+		t.Run(kind, func(t *testing.T) {
+			intermediate := filepath.Join(t.TempDir(), "intermediate."+kind)
+			if _, err := ConvertArchive(ctx, source, intermediate, ArchiveConvertOptions{OutputKind: kind}); err != nil {
+				t.Fatal(err)
+			}
+			output := filepath.Join(t.TempDir(), "roundtrip.pmtiles")
+			if _, err := ConvertArchive(ctx, intermediate, output, ArchiveConvertOptions{Metadata: map[string]string{"name": "explicit name", "custom_label": "replacement"}}); err != nil {
+				t.Fatal(err)
+			}
+			body, err := os.ReadFile(output)
+			if err != nil {
+				t.Fatal(err)
+			}
+			header, err := pm.DeserializeHeader(body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			data, err := archiveDecodePMBytes(body[header.MetadataOffset:header.MetadataOffset+header.MetadataLength], header.InternalCompression, maxMetadataBytes)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var actual map[string]json.RawMessage
+			if err := json.Unmarshal(data, &actual); err != nil {
+				t.Fatal(err)
+			}
+			for key, want := range expected {
+				if !bytes.Equal(actual[key], want) {
+					t.Errorf("%s changed value or JSON type: got %s, want %s", key, actual[key], want)
+				}
+			}
+			if string(actual["name"]) != `"explicit name"` {
+				t.Errorf("explicit metadata lost priority: %s", actual["name"])
+			}
+		})
+	}
+}
+
 func TestArchiveV2AppendPreservesRegionAndUnionsMetadata(t *testing.T) {
 	ctx := context.Background()
 	red := archiveTestPNG(t, color.RGBA{R: 255, A: 255})
@@ -190,21 +243,101 @@ func TestArchiveV2AppendPreservesRegionAndUnionsMetadata(t *testing.T) {
 			if tileJSON["custom"] != "keep" || (kind != "pmtiles" && (len(jsonBounds) == 0 || len(jsonCenter) == 0)) {
 				t.Errorf("TileJSON fields were lost: %v", tileJSON)
 			}
-			if kind == "pmtiles" {
-				if metadata["custom_id"] != "9007199254740993" || !strings.Contains(metadata["nested"], "9007199254740993") {
-					t.Errorf("PMTiles custom integers rounded: %v", metadata)
-				}
-			} else {
-				var raw map[string]json.RawMessage
-				if err := json.Unmarshal([]byte(metadata["json"]), &raw); err != nil || string(raw["custom_id"]) != "9007199254740993" || string(raw["nested"]) != `{"id":9007199254740993}` {
-					t.Errorf("custom integers rounded: %s, %v", metadata["json"], err)
-				}
+			var raw map[string]json.RawMessage
+			if err := json.Unmarshal([]byte(metadata["json"]), &raw); err != nil || string(raw["custom_id"]) != "9007199254740993" || string(raw["nested"]) != `{"id":9007199254740993}` {
+				t.Errorf("custom integers rounded: %s, %v", metadata["json"], err)
 			}
 			if kind == "file" {
 				body, err := os.ReadFile(filepath.Join(output, "sentinel.txt"))
 				if err != nil || string(body) != "preserve" {
 					t.Fatalf("sentinel changed: %s %v", body, err)
 				}
+			}
+		})
+	}
+}
+
+func TestArchiveV2AppendRefillsEmptyExistingTiles(t *testing.T) {
+	ctx := context.Background()
+	input := t.TempDir()
+	body := archiveTestPNG(t, color.White)
+	archiveTestWrite(t, filepath.Join(input, "0", "0", "0.png"), body)
+	archiveTestWrite(t, filepath.Join(input, "1", "1", "1.png"), body)
+	emptyInput := t.TempDir()
+	archiveTestWrite(t, filepath.Join(emptyInput, "0", "0", "0.png"), nil)
+	otherFormat := t.TempDir()
+	archiveTestWrite(t, filepath.Join(otherFormat, "0", "0", "0.jpg"), tileDataJPEG(t))
+	for _, kind := range []string{"file", "mbtiles"} {
+		t.Run(kind, func(t *testing.T) {
+			output := filepath.Join(t.TempDir(), "output."+kind)
+			if _, err := ConvertArchive(ctx, input, output, ArchiveConvertOptions{OutputKind: kind}); err != nil {
+				t.Fatal(err)
+			}
+			if kind == "file" {
+				for _, tile := range []string{"0/0/0.png", "1/1/1.png"} {
+					archiveTestWrite(t, filepath.Join(output, filepath.FromSlash(tile)), nil)
+				}
+			} else {
+				db, err := archiveOpenSQLite(output, false)
+				if err != nil {
+					t.Fatal(err)
+				}
+				_, err = db.Exec("UPDATE tiles SET tile_data=x''")
+				db.Close()
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := ConvertArchive(ctx, otherFormat, output, ArchiveConvertOptions{OutputKind: kind, Append: true}); err == nil || !strings.Contains(err.Error(), "mixed tile formats") {
+				t.Fatalf("all-empty target lost its declared format: %v", err)
+			}
+			result, err := ConvertArchive(ctx, input, output, ArchiveConvertOptions{OutputKind: kind, Append: true})
+			if err != nil || result.Tiles != 2 {
+				t.Fatalf("append could not recover an all-empty target: %+v, %v", result, err)
+			}
+			before := archiveV2Snapshot(t, output, "")
+			for _, coordinate := range []string{"0/0/0", "1/1/1"} {
+				if !bytes.Equal(before[coordinate], body) {
+					t.Fatalf("empty existing tile %s was not filled", coordinate)
+				}
+			}
+			if _, err := ConvertArchive(ctx, emptyInput, output, ArchiveConvertOptions{OutputKind: kind, Append: true}); err == nil || !strings.Contains(err.Error(), "empty") {
+				t.Fatalf("empty source tile was not rejected: %v", err)
+			}
+			after := archiveV2Snapshot(t, output, "")
+			if len(after) != len(before) || !bytes.Equal(after["0/0/0"], before["0/0/0"]) || !bytes.Equal(after["1/1/1"], before["1/1/1"]) {
+				t.Fatal("rejected empty source changed existing tiles")
+			}
+		})
+	}
+}
+
+func TestArchiveV2AppendRejectsConflictingEmptyFileFormats(t *testing.T) {
+	for _, tt := range []struct {
+		name, declared, source string
+		mixed                  bool
+	}{{"declared format", "png", "png", false}, {"placeholder format", "", "png", false}, {"mixed placeholders", "", "jpg", true}} {
+		t.Run(tt.name, func(t *testing.T) {
+			output := t.TempDir()
+			oldTile := filepath.Join(output, "0", "0", "0.jpg")
+			archiveTestWrite(t, oldTile, nil)
+			if tt.declared != "" {
+				archiveTestWrite(t, filepath.Join(output, "metadata.json"), []byte(`{"format":"`+tt.declared+`"}`))
+			}
+			if tt.mixed {
+				archiveTestWrite(t, filepath.Join(output, "1", "0", "0.png"), nil)
+			}
+			input := t.TempDir()
+			body := tileDataPNG(t)
+			if tt.source == "jpg" {
+				body = tileDataJPEG(t)
+			}
+			archiveTestWrite(t, filepath.Join(input, "0", "0", "0."+tt.source), body)
+			if _, err := ConvertArchive(context.Background(), input, output, ArchiveConvertOptions{Append: true}); err == nil || (!strings.Contains(err.Error(), "format") && !strings.Contains(err.Error(), "mixed")) {
+				t.Fatalf("conflicting empty file formats were accepted: %v", err)
+			}
+			if body, err := os.ReadFile(oldTile); err != nil || len(body) != 0 {
+				t.Fatalf("rejected append changed the empty placeholder: %v", err)
 			}
 		})
 	}

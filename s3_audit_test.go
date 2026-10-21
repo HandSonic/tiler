@@ -175,7 +175,7 @@ func TestAuditS3VersionedReadChecksReturnedETag(t *testing.T) {
 				w.Header().Set("ETag", etag)
 				io.WriteString(w, "same bytes")
 			})
-			body, _, err := archiveS3ReadObjectVersion(context.Background(), out, "tile", 1024, `"before"`)
+			body, _, _, err := archiveS3ReadObjectVersion(context.Background(), out, "tile", 1024, `"before"`)
 			if etag == `"before"` {
 				if err != nil || string(body) != "same bytes" {
 					t.Fatalf("stable object read failed: %q %v", body, err)
@@ -184,6 +184,25 @@ func TestAuditS3VersionedReadChecksReturnedETag(t *testing.T) {
 				t.Fatal("ignored mismatched returned version")
 			}
 		})
+	}
+}
+
+func TestAuditS3EncodedReadBoundsChunkedGzip(t *testing.T) {
+	packed, err := archiveGzip([]byte("a"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const limit = 20 // decoded payload fits; its gzip representation does not.
+	if len(packed) <= limit {
+		t.Fatal("gzip fixture must exceed the encoded budget")
+	}
+	out := archiveUploadTestOutput(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Encoding", "gzip")
+		w.(http.Flusher).Flush() // Send chunked data without Content-Length.
+		w.Write(packed)
+	})
+	if _, _, _, err := archiveS3ReadObjectVersion(context.Background(), out, "tile", limit, ""); err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("chunked gzip bypassed the encoded budget: %v", err)
 	}
 }
 
@@ -207,6 +226,13 @@ func TestAuditS3ArchivesWithExplicitKindCanBeReadBack(t *testing.T) {
 			location := "s3://maps/archive.data"
 			if _, err := ConvertArchive(context.Background(), input, location, ArchiveConvertOptions{S3: out, OutputKind: kind}); err != nil {
 				t.Fatal(err)
+			}
+			if kind == "mbtiles" {
+				packed, err := archiveGzip(store.get("maps/archive.data"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				store.putEncoded("maps/archive.data", packed, "gzip")
 			}
 			filename := filepath.Join(t.TempDir(), "roundtrip.mbtiles")
 			if _, err := ConvertArchive(context.Background(), location, filename, ArchiveConvertOptions{S3: out}); err != nil {

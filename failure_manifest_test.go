@@ -37,7 +37,7 @@ func TestFailureSourceFingerprintKeepsLayerButAllowsCredentialRotation(t *testin
 	if first == changed {
 		t.Fatal("different layers have the same source fingerprint")
 	}
-	for _, source := range []string{"", "not-a-url", "ftp://example.test/map", "https:///map"} {
+	for _, source := range []string{"", "not-a-url", "ftp://example.test/map", "https:///map", "https://tiles.example.test/{z}?style=road;lang=en", "https://tiles.example.test/{z}?style=%xx"} {
 		if _, err := FailureSourceFingerprint(source); err == nil {
 			t.Errorf("accepted invalid source %q", source)
 		}

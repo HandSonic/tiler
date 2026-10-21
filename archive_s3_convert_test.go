@@ -144,6 +144,12 @@ func (store *archiveS3TestStore) put(key string, body []byte) {
 	store.objects[key] = archiveS3TestObject{body: append([]byte(nil), body...)}
 }
 
+func (store *archiveS3TestStore) putEncoded(key string, body []byte, encoding string) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	store.objects[key] = archiveS3TestObject{body: append([]byte(nil), body...), encoding: encoding}
+}
+
 func (store *archiveS3TestStore) get(key string) []byte {
 	store.mu.Lock()
 	defer store.mu.Unlock()
@@ -272,6 +278,11 @@ func TestS3ConversionArchiveExactKeyAndAppend(t *testing.T) {
 	if len(first) == 0 || len(store.get("maps/exact/final-name.pmtiles/s3-output.pmtiles")) != 0 {
 		t.Fatal("archive was not uploaded to the exact requested key")
 	}
+	compressed, err := archiveGzip(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.putEncoded("maps/exact/final-name.pmtiles", compressed, "gzip")
 	before := store.count(http.MethodPut)
 	if _, err := ConvertArchive(context.Background(), b, destination, ArchiveConvertOptions{S3: out}); err == nil || store.count(http.MethodPut) != before {
 		t.Fatal("existing remote archive was overwritten without an explicit option")
@@ -294,6 +305,50 @@ func TestS3ConversionArchiveExactKeyAndAppend(t *testing.T) {
 	archiveTestWrite(t, copy, store.get("second/archives/merged.mbtiles"))
 	if !bytes.Equal(archiveS3ReadMBTile(t, copy, 2, 0, 1), red) {
 		t.Fatal("S3->S3 archive conversion lost tiles")
+	}
+}
+
+func TestS3ConversionGzipContentEncoding(t *testing.T) {
+	store, out := archiveS3Store(t)
+	body := tileDataPNG(t)
+	compressed, err := archiveGzip(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadata, err := archiveGzip([]byte(`{"name":"compressed input","format":"png"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.putEncoded("source/tiles/metadata.json", metadata, "gzip")
+	store.putEncoded("source/tiles/0/0/0.png", compressed, "gzip")
+	output := filepath.Join(t.TempDir(), "out.mbtiles")
+	if _, err := ConvertArchive(context.Background(), "s3://source/tiles/", output, ArchiveConvertOptions{S3: out}); err != nil {
+		t.Fatal(err)
+	}
+	if got := archiveS3ReadMBTile(t, output, 0, 0, 0); !bytes.Equal(got, body) {
+		t.Fatal("HTTP gzip changed the raster tile")
+	}
+	corrupt := append([]byte(nil), compressed...)
+	corrupt[len(corrupt)-8] ^= 0xff
+	for _, bad := range []struct {
+		body          []byte
+		encoding, err string
+	}{{corrupt, "gzip", "checksum"}, {compressed[:len(compressed)-4], "gzip", "unexpected EOF"}, {body, "br", "unsupported"}} {
+		store.putEncoded("source/tiles/0/0/0.png", bad.body, bad.encoding)
+		if _, err := ConvertArchive(context.Background(), "s3://source/tiles/", output, ArchiveConvertOptions{S3: out, Overwrite: true}); err == nil || !strings.Contains(err.Error(), bad.err) {
+			t.Fatalf("invalid encoded response was accepted (%s): %v", bad.err, err)
+		}
+		if got := archiveS3ReadMBTile(t, output, 0, 0, 0); !bytes.Equal(got, body) {
+			t.Fatal("failed encoded read replaced the previous archive")
+		}
+	}
+	large, err := archiveGzip([]byte(strings.Repeat("a", 1024)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.putEncoded(out.bucket+"/limited", large, "gzip")
+	if _, _, _, err := archiveS3ReadObjectVersion(context.Background(), out, "limited", 128, ""); err == nil || !strings.Contains(err.Error(), "exceeds 128") {
+		t.Fatalf("decoded response bypassed its size budget: %v", err)
 	}
 }
 
@@ -380,6 +435,40 @@ func TestS3ConversionErrorsPreserveDestinationAndCleanScratch(t *testing.T) {
 func TestS3ConversionPBFAndExtensionlessTiles(t *testing.T) {
 	store, out := archiveS3Store(t)
 	vector := []byte{0x1a, 0x0b, 0x0a, 0x04, 't', 'e', 's', 't', 0x28, 0x80, 0x20, 0x78, 0x02}
+	packed, err := archiveGzip(vector)
+	if err != nil {
+		t.Fatal(err)
+	}
+	layers := map[string]string{"vector_layers": `[{"id":"test","fields":{}}]`}
+	t.Run("legacy gzip source", func(t *testing.T) {
+		store.putEncoded("source/legacy/0/0/0", packed, "gzip")
+		output := filepath.Join(t.TempDir(), "legacy.mbtiles")
+		if _, err := ConvertArchive(context.Background(), "s3://source/legacy/", output, ArchiveConvertOptions{S3: out, InputTilePath: "{z}/{x}/{y}", Metadata: layers}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	t.Run("legacy retained gzip", func(t *testing.T) {
+		store.putEncoded("maps/legacy/0/0/0", packed, "gzip")
+		store.put("maps/legacy/metadata.json", []byte(`{"tile_path":"{z}/{x}/{y}"}`))
+		input := t.TempDir()
+		archiveTestWrite(t, filepath.Join(input, "0", "0", "0.pbf"), vector)
+		if _, err := ConvertArchive(context.Background(), input, "s3://maps/legacy/", ArchiveConvertOptions{S3: out, OutputTilePath: "{z}/{x}/{y}", Append: true, Metadata: layers}); err != nil {
+			t.Fatal(err)
+		}
+		if got := store.get("maps/legacy/0/0/0"); !bytes.Equal(got, packed) {
+			t.Fatal("append replaced the legacy vector object")
+		}
+		bad, err := archiveGzip([]byte("<html>access denied</html>"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		store.putEncoded("maps/legacy/0/0/0", bad, "gzip")
+		store.put("maps/legacy/metadata.json", []byte(`{"tile_path":"{z}/{x}/{y}"}`))
+		before := store.count(http.MethodPut)
+		if _, err := ConvertArchive(context.Background(), input, "s3://maps/legacy/", ArchiveConvertOptions{S3: out, OutputTilePath: "{z}/{x}/{y}", Append: true, Metadata: layers}); err == nil || !strings.Contains(err.Error(), "HTML") || store.count(http.MethodPut) != before {
+			t.Fatalf("gzip format hint admitted an error response: %v", err)
+		}
+	})
 	store.put("source/vector/0/0/0", vector)
 	store.put("source/vector/metadata.json", []byte(`{"format":"pbf","tile_path":"{z}/{x}/{y}","vector_layers":[{"id":"test","fields":{}}]}`))
 	if _, err := ConvertArchive(context.Background(), "s3://source/vector/", "s3://maps/vector.pmtiles", ArchiveConvertOptions{S3: out}); err != nil {
@@ -420,13 +509,16 @@ func TestS3ConversionExistingMetadataValidationPrecedesWrites(t *testing.T) {
 }
 
 func TestS3ConversionRejectsExistingMixedFormatsBeforeWrites(t *testing.T) {
-	for _, hasMetadata := range []bool{false, true} {
-		t.Run(strconv.FormatBool(hasMetadata), func(t *testing.T) {
+	for _, tc := range []struct {
+		hasMetadata bool
+		jpeg        string
+	}{{false, "JPEG filename conflicts with existing PNG dataset"}, {true, "JPEG filename conflicts with existing PNG dataset"}, {false, ""}, {true, ""}} {
+		t.Run(fmt.Sprintf("metadata=%t,empty=%t", tc.hasMetadata, tc.jpeg == ""), func(t *testing.T) {
 			store, out := archiveS3Store(t)
 			body := archiveTestPNG(t, color.RGBA{R: 255, A: 255})
 			store.put("maps/tiles/1/0/0.png", body)
-			store.put("maps/tiles/1/1/1.jpg", []byte("JPEG filename conflicts with existing PNG dataset"))
-			if hasMetadata {
+			store.put("maps/tiles/1/1/1.jpg", []byte(tc.jpeg))
+			if tc.hasMetadata {
 				store.put("maps/tiles/metadata.json", []byte(`{"format":"png","tile_path":"{z}/{x}/{y}.{format}"}`))
 			}
 			input := filepath.Join(t.TempDir(), "input")

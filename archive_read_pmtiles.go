@@ -98,14 +98,28 @@ func archiveWalkPM(ctx context.Context, input string, visit archiveVisit) (map[s
 		}
 		return nil, fmt.Errorf("PMTiles metadata: %w", err)
 	}
-	metadata := make(map[string]string, len(values)+7)
+	metadata := make(map[string]string)
 	for key, value := range values {
-		var text string
-		if json.Unmarshal(value, &text) == nil {
-			metadata[key] = text
-		} else {
-			metadata[key] = string(value)
+		switch key {
+		case "name", "description", "attribution", "version", "type":
+			// These MBTiles fields are strings. Keep extension values in the
+			// JSON entry instead of flattening numbers, arrays and objects.
+			var text *string
+			if json.Unmarshal(value, &text) == nil && text != nil {
+				metadata[key] = *text
+				delete(values, key)
+			}
+		case "format", "bounds", "center", "minzoom", "maxzoom", "scheme", "tile_path":
+			// The PMTiles header and the destination determine these fields.
+			delete(values, key)
 		}
+	}
+	if len(values) > 0 {
+		encoded, err := json.Marshal(values)
+		if err != nil {
+			return nil, err
+		}
+		metadata["json"] = string(encoded)
 	}
 	metadata["format"] = format
 	metadata["bounds"] = fmt.Sprintf("%.7f,%.7f,%.7f,%.7f", float64(header.MinLonE7)/1e7, float64(header.MinLatE7)/1e7, float64(header.MaxLonE7)/1e7, float64(header.MaxLatE7)/1e7)

@@ -428,7 +428,10 @@ func FailureSourceFingerprint(sourceTemplate string) (string, error) {
 	u.Host = strings.ToLower(u.Host)
 	u.User = nil
 	u.Fragment = ""
-	query := u.Query()
+	query, err := url.ParseQuery(u.RawQuery)
+	if err != nil {
+		return "", fmt.Errorf("failure source query must use valid URL encoding: %w", err)
+	}
 	for key := range query {
 		if sensitiveFailureQueryKey(key) {
 			query.Del(key)
