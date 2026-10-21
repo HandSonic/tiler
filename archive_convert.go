@@ -389,7 +389,10 @@ func archiveNumbers(text string, count int) ([]float64, error) {
 	return result, nil
 }
 
-func archiveMBTilesToPMTiles(ctx context.Context, input, output, work, targetFormat string, overrides map[string]string) (result ArchiveConvertResult, err error) {
+// archiveWritePMTiles exports convertLocalArchive's private, closed staging
+// database. Its tiles have already been validated and converted to the declared
+// format, including one gzip layer for PBF, so write those bytes unchanged.
+func archiveWritePMTiles(ctx context.Context, input, output, work string) (result ArchiveConvertResult, err error) {
 	source, err := archiveOpenSQLite(input, true)
 	if err != nil {
 		return result, fmt.Errorf("open MBTiles input: %w", err)
@@ -404,15 +407,12 @@ func archiveMBTilesToPMTiles(ctx context.Context, input, output, work, targetFor
 	if err != nil {
 		return result, err
 	}
-	for k, v := range overrides {
-		metadata[k] = v
+	targetFormat, err := archiveFormat(metadata["format"])
+	if err != nil {
+		return result, err
 	}
-	sourceFormat, sourceFormatErr := archiveFormat(metadata["format"])
 	if targetFormat == "" {
-		targetFormat, err = sourceFormat, sourceFormatErr
-		if err != nil {
-			return result, err
-		}
+		return result, fmt.Errorf("staged tiles have no declared format")
 	}
 	index, err := archiveOpenSQLite(filepath.Join(work, "tile-index.sqlite"), false)
 	if err != nil {
@@ -530,16 +530,6 @@ func archiveMBTilesToPMTiles(ctx context.Context, input, output, work, targetFor
 		var body []byte
 		if err = sourceTx.QueryRowContext(ctx, "SELECT tile_data FROM tiles WHERE zoom_level=? AND tile_column=? AND tile_row=?", z, x, tmsY).Scan(&body); err != nil {
 			return result, err
-		}
-		if targetFormat == "" {
-			targetFormat, err = archiveInferFormat(body)
-			if err != nil {
-				return result, err
-			}
-		}
-		body, err = archivePrepareTileData(body, sourceFormat, targetFormat)
-		if err != nil {
-			return result, fmt.Errorf("convert MBTiles tile %d/%d/%d: %w", z, x, tmsY, err)
 		}
 		if uint64(len(body)) > uint64(^uint32(0)) {
 			return result, fmt.Errorf("tile exceeds PMTiles 4 GiB content limit")
@@ -717,18 +707,6 @@ func archiveValidateVectorLayers(value interface{}) error {
 func archivePrepareTileData(body []byte, sourceFormat, targetFormat string) ([]byte, error) {
 	if sourceFormat != "" && (sourceFormat == PBF) != (targetFormat == PBF) {
 		return nil, fmt.Errorf("cannot convert between raster images and PBF vector tiles (%s to %s); only PNG/JPEG image transcoding is supported", sourceFormat, targetFormat)
-	}
-	if targetFormat == PBF {
-		probe := body
-		if len(body) >= 2 && body[0] == 0x1f && body[1] == 0x8b {
-			if reader, err := gzip.NewReader(bytes.NewReader(body)); err == nil {
-				probe, _ = io.ReadAll(io.LimitReader(reader, 512))
-				reader.Close()
-			}
-		}
-		if strings.HasPrefix(http.DetectContentType(probe), "image/") {
-			return nil, fmt.Errorf("cannot store raster image data as PBF vector tiles")
-		}
 	}
 	return prepareTileData(body, targetFormat, true)
 }

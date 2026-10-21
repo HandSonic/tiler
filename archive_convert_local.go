@@ -307,7 +307,7 @@ func convertLocalArchive(ctx context.Context, input, output string, opts Archive
 	staged := stage
 	if kind == "pmtiles" {
 		staged = filepath.Join(work, "archive.pmtiles")
-		result, err = archiveMBTilesToPMTiles(ctx, stage, staged, work, "", nil)
+		result, err = archiveWritePMTiles(ctx, stage, staged, work)
 		if err != nil {
 			return result, err
 		}
@@ -596,7 +596,7 @@ func archiveWalkMB(ctx context.Context, input string, visit archiveVisit) (map[s
 	if err != nil {
 		return nil, err
 	}
-	rows, err := tx.QueryContext(ctx, "SELECT zoom_level,tile_column,tile_row,CASE WHEN length(tile_data)<=67108864 THEN tile_data ELSE NULL END,length(tile_data) FROM tiles")
+	rows, err := tx.QueryContext(ctx, "SELECT zoom_level,tile_column,tile_row,CASE WHEN length(tile_data)<=? THEN tile_data ELSE NULL END,length(tile_data) FROM tiles", maxTileDataBytes)
 	if err != nil {
 		return nil, err
 	}

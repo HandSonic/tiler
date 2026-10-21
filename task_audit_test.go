@@ -313,16 +313,21 @@ func TestAuditDisjointSourceLayersRemainValidAndReleaseTheirIndex(t *testing.T) 
 		{Zoom: 1, URL: server.URL + "/first/{z}/{x}/{y}", Collection: orb.Collection{orb.Point{-90, 45}}},
 		{Zoom: 1, URL: server.URL + "/second/{z}/{x}/{y}", Collection: orb.Collection{orb.Point{90, -45}}},
 		// Repeating the first source is allowed even with a different layer index.
-		{Zoom: 1, URL: server.URL + "/first/{z}/{x}/{y}", Collection: orb.Collection{orb.Point{-90, 45}}},
+		// The last layer also covers a new coordinate that needs no retained claim.
+		{Zoom: 1, URL: server.URL + "/first/{z}/{x}/{y}", Collection: orb.Collection{orb.Point{-90, 45}, orb.Point{90, 45}}},
 		{Zoom: 1, URL: server.URL + "/empty/{z}/{x}/{y}"},
 	}
 	task := NewTask(layers, TileMap{Name: "disjoint", Format: PNG})
 	t.Cleanup(task.Cancel)
+	index := task.sourceChecks[1]
 	if err := task.Download(); err != nil {
 		t.Fatal(err)
 	}
-	if requests.Load() != 3 || task.sourceTiles != 0 || len(task.sourceChecks) != 0 {
+	if requests.Load() != 4 || task.sourceTiles != 0 || len(task.sourceChecks) != 0 {
 		t.Fatalf("disjoint source output/index requests=%d tracked=%d zooms=%d", requests.Load(), task.sourceTiles, len(task.sourceChecks))
+	}
+	if len(index) != 2 {
+		t.Fatalf("last layer retained an unnecessary source claim: %v", index)
 	}
 }
 

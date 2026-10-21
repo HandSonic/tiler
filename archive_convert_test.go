@@ -211,7 +211,11 @@ func TestArchiveRejectsImagesMislabeledAsPBF(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, body := range [][]byte{image, packed} {
+	nested, err := archiveGzip(packed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, body := range [][]byte{image, packed, nested, []byte("BM"), {0, 0, 1, 0}, []byte("RIFF\x00\x00\x00\x00WEBP")} {
 		for _, source := range []string{"", PBF} {
 			if _, err := archivePrepareTileData(body, source, PBF); err == nil || !strings.Contains(err.Error(), "raster") {
 				t.Fatalf("image data accepted as PBF: %v", err)

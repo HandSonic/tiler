@@ -630,6 +630,11 @@ func (task *Task) claimTileSource(tile maptile.Tile, layerIndex int) error {
 		}
 		return nil
 	}
+	// The last layer only checks earlier claims. No later layer can need a
+	// claim for a new coordinate, so do not retain it or apply the index cap.
+	if task.sourceLast[int(tile.Z)] == layerIndex {
+		return nil
+	}
 	// Only mixed-source zooms need this index. Bound its retained coordinates
 	// so overlap validation cannot grow for the entire download without limit.
 	const maxSourceCheckTiles = 1_000_000

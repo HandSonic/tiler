@@ -12,6 +12,7 @@ import (
 	"image/jpeg"
 	"image/png"
 	"io"
+	"net/http"
 	"strings"
 )
 
@@ -63,7 +64,9 @@ func prepareTileData(body []byte, format string, gzipPBF bool) ([]byte, error) {
 				return nil, fmt.Errorf("empty PBF tile after decompression")
 			}
 		}
-		if bytes.HasPrefix(body, []byte("\x89PNG\r\n\x1a\n")) || bytes.HasPrefix(body, []byte{0xff, 0xd8, 0xff}) || bytes.HasPrefix(body, []byte("GIF87a")) || bytes.HasPrefix(body, []byte("GIF89a")) || (len(body) >= 12 && string(body[:4]) == "RIFF" && string(body[8:12]) == "WEBP") {
+		// Check once after all gzip layers, for downloads and conversions alike.
+		// Retain the short WebP signature check for truncated RIFF wrappers.
+		if strings.HasPrefix(http.DetectContentType(body), "image/") || (len(body) >= 12 && string(body[:4]) == "RIFF" && string(body[8:12]) == "WEBP") {
 			return nil, fmt.Errorf("raster image data cannot be stored as PBF vector tiles")
 		}
 		text := bytes.TrimSpace(bytes.TrimPrefix(body, []byte{0xef, 0xbb, 0xbf}))
