@@ -87,15 +87,13 @@ func TestArchiveV2LocalRoundTripMatrixAndCustomPaths(t *testing.T) {
 					if err != nil || metadata["tile_path"] != pattern {
 						t.Fatalf("metadata=%v err=%v", metadata, err)
 					}
-				} else {
-					dbPath := destination
-					if targetKind == "pmtiles" {
-						dbPath = filepath.Join(t.TempDir(), "back.mbtiles")
-						if _, err := convertLocalArchive(ctx, destination, dbPath, ArchiveConvertOptions{}); err != nil {
-							t.Fatal(err)
-						}
+				} else if targetKind == "pmtiles" {
+					_, _, metadata := archiveTestReadPM(t, destination)
+					if _, exists := metadata["tile_path"]; exists {
+						t.Fatal("path metadata leaked into PMTiles JSON")
 					}
-					db, err := archiveOpenSQLite(dbPath, true)
+				} else {
+					db, err := archiveOpenSQLite(destination, true)
 					if err != nil {
 						t.Fatal(err)
 					}

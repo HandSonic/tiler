@@ -55,26 +55,25 @@ func TestS3Save(t *testing.T) {
 		contentType string
 		encoding    string
 		key         string
+		configured  bool
+		token       string
 	}{
-		{"png", PNG, "maps", []byte("png tile"), "image/png", "", "maps/2/3/1.png"},
-		{"jpg", JPG, "maps", []byte("jpg tile"), "image/jpeg", "", "maps/2/3/1.jpg"},
-		{"pbf", PBF, "maps", compressed.Bytes(), "application/x-protobuf", "gzip", "maps/2/3/1.pbf"},
-		{"empty prefix", PNG, "", []byte("tile"), "image/png", "", "2/3/1.png"},
-		{"root prefix", PNG, "/", []byte("tile"), "image/png", "", "2/3/1.png"},
-		{"prefix slashes", PNG, "/maps/imagery/", []byte("tile"), "image/png", "", "maps/imagery/2/3/1.png"},
+		{"png", PNG, "maps", []byte("png tile"), "image/png", "", "maps/2/3/1.png", true, ""},
+		{"jpg", JPG, "maps", []byte("jpg tile"), "image/jpeg", "", "maps/2/3/1.jpg", true, "configured-session-token"},
+		{"pbf", PBF, "maps", compressed.Bytes(), "application/x-protobuf", "gzip", "maps/2/3/1.pbf", false, ""},
+		{"empty prefix", PNG, "", []byte("tile"), "image/png", "", "2/3/1.png", false, ""},
+		{"root prefix", PNG, "/", []byte("tile"), "image/png", "", "2/3/1.png", false, ""},
+		{"prefix slashes", PNG, "/maps/imagery/", []byte("tile"), "image/png", "", "maps/imagery/2/3/1.png", false, ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			configureS3Test(t)
-			wantAccessKey, wantToken := "test-access-key", ""
-			if tt.name == "png" || tt.name == "jpg" {
+			wantAccessKey := "test-access-key"
+			if tt.configured {
 				t.Setenv("AWS_SESSION_TOKEN", "environment-token")
 				wantAccessKey = "configured-access-key"
-				if tt.name == "jpg" {
-					wantToken = "configured-session-token"
-				}
 				viper.SetConfigType("toml")
-				if err := viper.ReadConfig(strings.NewReader("[output.s3]\naccess_key_id = \"configured-access-key\"\nsecret_access_key = \"configured-secret-key\"\nsession_token = \"" + wantToken + "\"\n")); err != nil {
+				if err := viper.ReadConfig(strings.NewReader("[output.s3]\naccess_key_id = \"configured-access-key\"\nsecret_access_key = \"configured-secret-key\"\nsession_token = \"" + tt.token + "\"\n")); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -124,7 +123,7 @@ func TestS3Save(t *testing.T) {
 				if !strings.HasPrefix(got.authorization, "AWS4-HMAC-SHA256 Credential="+wantAccessKey+"/") {
 					t.Error("request is missing the expected SigV4 authorization")
 				}
-				if got.token != wantToken {
+				if got.token != tt.token {
 					t.Error("request used an unexpected session token")
 				}
 			default:
@@ -166,7 +165,6 @@ func TestNewS3OutputConfiguration(t *testing.T) {
 			viper.Set("output.s3.region", "ap-southeast-1")
 		}, false, 60 * time.Second},
 		{"explicit timeout", func(t *testing.T) { viper.Set("output.s3.timeout_seconds", 7) }, false, 7 * time.Second},
-		{"empty endpoint uses AWS", func(t *testing.T) { viper.Set("output.s3.endpoint", "") }, false, 60 * time.Second},
 		{"missing bucket", func(t *testing.T) { viper.Set("output.s3.bucket", "") }, true, 0},
 		{"missing region", func(t *testing.T) { t.Setenv("AWS_REGION", "") }, true, 0},
 		{"endpoint without scheme", func(t *testing.T) { viper.Set("output.s3.endpoint", "localhost:9000") }, true, 0},

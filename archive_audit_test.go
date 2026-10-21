@@ -16,11 +16,6 @@ import (
 )
 
 func TestAuditArchiveRejectsNullJSONMetadata(t *testing.T) {
-	defer func() {
-		if value := recover(); value != nil {
-			t.Fatalf("untrusted metadata panicked instead of returning an error: %v", value)
-		}
-	}()
 	_, err := archiveMergeMetadata(map[string]string{"json": "null", "vector_layers": `[]`}, map[string]string{})
 	if err == nil {
 		t.Fatal("null vector JSON metadata was accepted")
