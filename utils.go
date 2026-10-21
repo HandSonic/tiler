@@ -8,13 +8,10 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"sync"
 
 	"github.com/paulmach/orb"
 	"github.com/paulmach/orb/geojson"
-	"github.com/paulmach/orb/maptile"
 	log "github.com/sirupsen/logrus"
-	"tiler/internal/cover"
 )
 
 func saveToMBTile(tile Tile, db *sql.DB) error {
@@ -85,82 +82,16 @@ func optimizeConnection(db *sql.DB) error {
 	return nil
 }
 
-func optimizeDatabase(db *sql.DB) error {
-	_, err := db.Exec("ANALYZE;")
-	if err != nil {
-		return err
-	}
-
-	_, err = db.Exec("VACUUM;")
-	if err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func loadFeature(path string) *geojson.Feature {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		log.Fatalf("unable to read file: %v", err)
-	}
-
-	f, err := geojson.UnmarshalFeature(data)
-	if err == nil {
-		return f
-	}
-
-	fc, err := geojson.UnmarshalFeatureCollection(data)
-	if err == nil {
-		if len(fc.Features) != 1 {
-			log.Fatalf("must have 1 feature: %v", len(fc.Features))
-		}
-		return fc.Features[0]
-	}
-
-	g, err := geojson.UnmarshalGeometry(data)
-	if err != nil {
-		log.Fatalf("unable to unmarshal feature: %v", err)
-	}
-
-	return geojson.NewFeature(g.Geometry())
-}
-
-func loadFeatureCollection(path string) *geojson.FeatureCollection {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		log.Fatalf("unable to read file: %v", err)
-	}
-
-	fc, err := geojson.UnmarshalFeatureCollection(data)
-	if err != nil {
-		log.Fatalf("unable to unmarshal feature: %v", err)
-	}
-
-	count := 0
-	for i := range fc.Features {
-		if fc.Features[i].Properties["name"] != "original" {
-			fc.Features[count] = fc.Features[i]
-			count++
-		}
-	}
-	fc.Features = fc.Features[:count]
-
-	return fc
-}
-
-func loadCollection(path string) orb.Collection {
-	collection, err := readCollection(path)
-	if err != nil {
-		log.Fatal(err)
-	}
-	return collection
-}
-
 // readCollection accepts common GeoJSON exports without logging or exiting, so
 // callers can report input errors and the parsing behavior can be tested.
 func readCollection(path string) (orb.Collection, error) {
-	const maxGeoJSONBytes = 64 << 20
+	const (
+		maxGeoJSONBytes = 64 << 20
+		maxGeoJSONDepth = 32
+		// Nested RawMessage decoding repeats input. Limit cumulative work to
+		// twice the permitted file size, independently of the depth cap.
+		maxGeoJSONDecodeBytes = 2 * maxGeoJSONBytes
+	)
 	info, err := os.Stat(path)
 	if err != nil {
 		return nil, fmt.Errorf("read GeoJSON %s: %w", path, err)
@@ -233,12 +164,12 @@ func readCollection(path string) (orb.Collection, error) {
 	var geometryBytes uint64
 	var decodeGeometry func(json.RawMessage, int) (orb.Geometry, error)
 	decodeGeometry = func(raw json.RawMessage, nesting int) (orb.Geometry, error) {
-		if nesting > 32 {
-			return nil, fmt.Errorf("GeoJSON GeometryCollection nesting exceeds 32 levels")
+		if nesting > maxGeoJSONDepth {
+			return nil, fmt.Errorf("GeoJSON GeometryCollection nesting exceeds %d levels", maxGeoJSONDepth)
 		}
 		geometryBytes += uint64(len(raw))
-		if geometryBytes > 128<<20 {
-			return nil, fmt.Errorf("GeoJSON geometry decoding exceeds its 128 MiB work budget")
+		if geometryBytes > maxGeoJSONDecodeBytes {
+			return nil, fmt.Errorf("GeoJSON geometry decoding exceeds its %d MiB work budget", maxGeoJSONDecodeBytes>>20)
 		}
 		var geometry struct {
 			Type        string            `json:"type"`
@@ -397,53 +328,3 @@ func validateGeoJSONLinearGeometry(geometry orb.Geometry) error {
 }
 
 // output gets called if there is a test failure for debugging.
-func output(name string, r *geojson.FeatureCollection) {
-	f := loadFeature("./data/" + name + ".geojson")
-	if f.Properties == nil {
-		f.Properties = make(geojson.Properties)
-	}
-
-	f.Properties["fill"] = "#FF0000"
-	f.Properties["fill-opacity"] = "0.5"
-	f.Properties["stroke"] = "#FF0000"
-	f.Properties["name"] = "original"
-	r.Append(f)
-
-	data, err := json.MarshalIndent(r, "", " ")
-	if err != nil {
-		log.Fatalf("error marshalling json: %v", err)
-	}
-
-	err = os.WriteFile("failure_"+name+".geojson", data, 0644)
-	if err != nil {
-		log.Fatalf("write file failure: %v", err)
-	}
-}
-
-// output gets called if there is a test failure for debugging.
-func output2(name string, r *geojson.FeatureCollection, wg *sync.WaitGroup) {
-	defer wg.Done()
-	data, err := json.MarshalIndent(r, "", " ")
-	if err != nil {
-		log.Fatalf("error marshalling json: %v", err)
-	}
-
-	err = os.WriteFile(name+".geojson", data, 0644)
-	if err != nil {
-		log.Fatalf("write file failure: %v", err)
-	}
-}
-
-func getZoomCount(g orb.Geometry, minz int, maxz int) map[int]int64 {
-
-	info := make(map[int]int64)
-	for z := minz; z <= maxz; z++ {
-		count, err := cover.Count(orb.Collection{g}, maptile.Zoom(z))
-		if err != nil {
-			log.Error(err)
-			continue
-		}
-		info[z] = count
-	}
-	return info
-}

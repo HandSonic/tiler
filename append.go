@@ -23,11 +23,11 @@ func readDownloadFileMetadata(filename string) (map[string]string, error) {
 		return nil, err
 	}
 	defer file.Close()
-	body, err := io.ReadAll(io.LimitReader(file, 16*1024*1024+1))
+	body, err := io.ReadAll(io.LimitReader(file, maxMetadataBytes+1))
 	if err != nil {
 		return nil, err
 	}
-	if len(body) > 16*1024*1024 {
+	if len(body) > maxMetadataBytes {
 		return nil, fmt.Errorf("existing metadata.json exceeds 16 MiB")
 	}
 	var raw map[string]json.RawMessage
@@ -70,7 +70,7 @@ func readDownloadMBMetadata(db *sql.DB) (map[string]string, error) {
 	if err := db.QueryRow("select coalesce(sum(coalesce(length(cast(name as blob)),0) + coalesce(length(cast(value as blob)),0)),0) from metadata").Scan(&total); err != nil {
 		return nil, fmt.Errorf("read existing MBTiles metadata size: %w", err)
 	}
-	if total > 16<<20 {
+	if total > maxMetadataBytes {
 		return nil, fmt.Errorf("existing MBTiles metadata exceeds 16 MiB")
 	}
 	rows, err := db.Query("select name, value from metadata")
@@ -440,28 +440,8 @@ func mergeDownloadVectorLayers(previous, current interface{}) ([]interface{}, er
 				result = append(result, layer)
 				continue
 			}
-			oldFields := old["fields"].(map[string]interface{})
-			for key, value := range fields {
-				if previous, exists := oldFields[key]; exists && previous != value {
-					return nil, fmt.Errorf("vector layer %q field %q has conflicting types; use a different output", id, key)
-				}
-				oldFields[key] = value
-			}
-			for _, key := range []string{"minzoom", "maxzoom"} {
-				previous, hadPrevious := old[key]
-				current, hasCurrent := layer[key]
-				if !hadPrevious || !hasCurrent {
-					// An omitted limit covers that source's full dataset range.
-					// Only two explicit limits can restrict the merged layer.
-					delete(old, key)
-					continue
-				}
-				a, b := previous.(float64), current.(float64)
-				if key == "minzoom" {
-					old[key] = math.Min(a, b)
-				} else {
-					old[key] = math.Max(a, b)
-				}
+			if err := mergeVectorLayer(old, layer); err != nil {
+				return nil, err
 			}
 			for key, value := range layer {
 				if key == "fields" || key == "minzoom" || key == "maxzoom" {
@@ -474,4 +454,28 @@ func mergeDownloadVectorLayers(previous, current interface{}) ([]interface{}, er
 		}
 	}
 	return result, nil
+}
+
+// Both download append and archive conversion use the same merge rules after
+// validating their input schema. Keep omitted zoom limits unbounded.
+func mergeVectorLayer(previous, current map[string]interface{}) error {
+	fields := previous["fields"].(map[string]interface{})
+	for key, value := range current["fields"].(map[string]interface{}) {
+		if old, exists := fields[key]; exists && old != value {
+			return fmt.Errorf("vector layer %q field %q has conflicting types", previous["id"], key)
+		}
+		fields[key] = value
+	}
+	for _, key := range []string{"minzoom", "maxzoom"} {
+		a, hadPrevious := previous[key].(float64)
+		b, hasCurrent := current[key].(float64)
+		if !hadPrevious || !hasCurrent {
+			delete(previous, key)
+		} else if key == "minzoom" {
+			previous[key] = math.Min(a, b)
+		} else {
+			previous[key] = math.Max(a, b)
+		}
+	}
+	return nil
 }

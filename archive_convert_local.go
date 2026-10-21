@@ -360,7 +360,7 @@ func archivePathContains(parent, child string) bool {
 
 func archiveCheckArchiveDestination(destination, kind string) error {
 	if kind == "mbtiles" {
-		return archiveCheckDestinationSidecars(destination)
+		return checkSQLiteSidecars(destination)
 	}
 	file, err := os.Open(destination)
 	if os.IsNotExist(err) {
@@ -379,14 +379,14 @@ func archiveCheckArchiveDestination(destination, kind string) error {
 		return closeErr
 	}
 	if bytes.HasPrefix(header[:n], []byte("SQLite format 3\x00")) {
-		return archiveCheckDestinationSidecars(destination)
+		return checkSQLiteSidecars(destination)
 	}
 	return nil
 }
 
 // Replacing a database while its live WAL or rollback journal remains beside
 // the destination can make the new archive read stale pages from that sidecar.
-func archiveCheckDestinationSidecars(destination string) error {
+func checkSQLiteSidecars(destination string) error {
 	for _, suffix := range []string{"-wal", "-journal"} {
 		info, err := os.Lstat(destination + suffix)
 		if os.IsNotExist(err) {
@@ -409,7 +409,7 @@ func archiveCheckDestinationSidecars(destination string) error {
 			}
 		}
 		if !info.Mode().IsRegular() || info.Size() > 0 {
-			return fmt.Errorf("MBTiles destination has an active %s sidecar; close SQLite writers and checkpoint the database before replacing or appending", suffix)
+			return fmt.Errorf("MBTiles has an active %s sidecar; close SQLite writers and checkpoint the database before writing or uploading", suffix)
 		}
 	}
 	return nil
@@ -652,7 +652,7 @@ func archiveExportFiles(ctx context.Context, input, output, pattern string, appe
 	if err != nil {
 		return err
 	}
-	if len(data)+1 > 16<<20 {
+	if len(data)+1 > maxMetadataBytes {
 		return fmt.Errorf("output metadata.json exceeds 16 MiB")
 	}
 	if err := os.MkdirAll(output, 0755); err != nil {
@@ -826,23 +826,8 @@ func archiveMergeMetadata(existing, incoming map[string]string) (map[string]stri
 				layer := raw.(map[string]interface{})
 				id := layer["id"].(string)
 				if previous, ok := layers[id]; ok {
-					fields := previous["fields"].(map[string]interface{})
-					for name, value := range layer["fields"].(map[string]interface{}) {
-						if old, ok := fields[name]; ok && old != value {
-							return nil, fmt.Errorf("vector layer %q field %q has conflicting metadata", id, name)
-						}
-						fields[name] = value
-					}
-					for _, key := range []string{"minzoom", "maxzoom"} {
-						a, aok := previous[key].(float64)
-						b, bok := layer[key].(float64)
-						if !aok || !bok {
-							// An omitted limit covers the source dataset's full
-							// range; the bounded region must not narrow that range.
-							delete(previous, key)
-						} else if (key == "minzoom" && b < a) || (key == "maxzoom" && b > a) {
-							previous[key] = b
-						}
+					if err := mergeVectorLayer(previous, layer); err != nil {
+						return nil, err
 					}
 				} else {
 					layers[id] = layer

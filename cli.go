@@ -87,14 +87,14 @@ func runConvertCLI(args []string, stdout, stderr io.Writer) error {
 		if !info.Mode().IsRegular() {
 			return fmt.Errorf("metadata must be a regular file")
 		}
-		if info.Size() > 16*1024*1024 {
+		if info.Size() > maxMetadataBytes {
 			return fmt.Errorf("metadata exceeds 16 MiB")
 		}
 		file, err := os.Open(*metadataFile)
 		if err != nil {
 			return err
 		}
-		body, err := io.ReadAll(io.LimitReader(file, 16*1024*1024+1))
+		body, err := io.ReadAll(io.LimitReader(file, maxMetadataBytes+1))
 		closeErr := file.Close()
 		if err != nil {
 			return err
@@ -102,7 +102,7 @@ func runConvertCLI(args []string, stdout, stderr io.Writer) error {
 		if closeErr != nil {
 			return closeErr
 		}
-		if len(body) > 16*1024*1024 {
+		if len(body) > maxMetadataBytes {
 			return fmt.Errorf("metadata exceeds 16 MiB")
 		}
 		var values map[string]json.RawMessage

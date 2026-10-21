@@ -291,7 +291,7 @@ func archiveS3ReadObjectVersion(ctx context.Context, out *s3Output, key string, 
 }
 
 func archiveS3Metadata(ctx context.Context, out *s3Output, prefix string) (map[string]string, bool, error) {
-	data, err := archiveS3ReadObject(ctx, out, archiveS3Key(prefix, "metadata.json"), 16<<20)
+	data, err := archiveS3ReadObject(ctx, out, archiveS3Key(prefix, "metadata.json"), maxMetadataBytes)
 	if archiveS3Missing(err) {
 		return map[string]string{}, false, nil
 	}
@@ -746,7 +746,7 @@ func archiveS3ConvertToTiles(ctx context.Context, out *s3Output, input, prefix, 
 	if err != nil {
 		return result, err
 	}
-	if len(metadataBody) > 16<<20 {
+	if len(metadataBody) > maxMetadataBytes {
 		return result, fmt.Errorf("S3 output metadata.json exceeds 16 MiB")
 	}
 	rows, err := tx.QueryContext(ctx, "SELECT zoom_level,tile_column,tile_row,tile_data FROM tiles ORDER BY zoom_level,tile_column,tile_row")

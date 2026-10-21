@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"os"
 	"path"
@@ -234,39 +233,7 @@ func checkArchiveUploadWAL(filename string) error {
 	if !strings.EqualFold(filepath.Ext(filename), ".mbtiles") {
 		return nil
 	}
-	for _, suffix := range []string{"-wal", "-journal"} {
-		name := filename + suffix
-		info, err := os.Lstat(name)
-		if os.IsNotExist(err) {
-			continue
-		}
-		if err != nil {
-			return fmt.Errorf("check MBTiles SQLite sidecar %s: %w", name, err)
-		}
-		if !info.Mode().IsRegular() {
-			return fmt.Errorf("MBTiles SQLite sidecar %s must be a regular file", name)
-		}
-		if info.Size() == 0 {
-			continue
-		}
-		if suffix == "-journal" {
-			// PERSIST mode keeps an inactive journal after commit with its
-			// header zeroed. A hot rollback journal must never be omitted.
-			file, err := os.Open(name)
-			if err != nil {
-				return err
-			}
-			var header [8]byte
-			_, readErr := io.ReadFull(file, header[:])
-			closeErr := file.Close()
-			if readErr == nil && closeErr == nil && header == [8]byte{} {
-				continue
-			}
-			return fmt.Errorf("MBTiles %s has an active rollback journal; close the SQLite writer before uploading", filename)
-		}
-		return fmt.Errorf("MBTiles %s has an uncheckpointed WAL sidecar; close the SQLite writer and checkpoint the database before uploading", filename)
-	}
-	return nil
+	return checkSQLiteSidecars(filename)
 }
 
 func uploadArchiveFile(parent context.Context, out *s3Output, uploader *manager.Uploader, input archiveUploadFile, timeout time.Duration) error {

@@ -12,6 +12,11 @@ import (
 // HeaderV3LenBytes is the fixed PMTiles v3 header size.
 const HeaderV3LenBytes = HEADERV3_LEN_BYTES
 
+// Directory decoding limits bound allocation for callers inspecting untrusted
+// files. They are application resource limits, not PMTiles format limits.
+const maxDirectoryDecodedBytes = 64 << 20
+const maxDirectoryEntries = 2 << 20
+
 // SerializeHeader writes the official PMTiles v3 binary header layout.
 func SerializeHeader(header HeaderV3) []byte { return serialize_header(header) }
 
@@ -47,15 +52,13 @@ func DeserializeHeader(data []byte) (HeaderV3, error) {
 // validates varints, ascending IDs, field widths, offsets, gzip integrity and
 // trailing data. It is suitable for inspecting the directories we generate.
 func DeserializeEntries(data []byte) ([]EntryV3, error) {
-	const maxDecodedBytes = 64 << 20
-	const maxEntries = 2 << 20
 	raw := bytes.NewReader(data)
 	reader, err := gzip.NewReader(raw)
 	if err != nil {
 		return nil, fmt.Errorf("read PMTiles gzip directory: %w", err)
 	}
 	reader.Multistream(false)
-	decoded, err := io.ReadAll(io.LimitReader(reader, maxDecodedBytes+1))
+	decoded, err := io.ReadAll(io.LimitReader(reader, maxDirectoryDecodedBytes+1))
 	closeErr := reader.Close()
 	if err != nil {
 		return nil, fmt.Errorf("decode PMTiles directory: %w", err)
@@ -63,11 +66,21 @@ func DeserializeEntries(data []byte) ([]EntryV3, error) {
 	if closeErr != nil {
 		return nil, fmt.Errorf("close PMTiles directory: %w", closeErr)
 	}
-	if len(decoded) > maxDecodedBytes {
-		return nil, fmt.Errorf("PMTiles directory exceeds %d decoded bytes", maxDecodedBytes)
+	if len(decoded) > maxDirectoryDecodedBytes {
+		return nil, fmt.Errorf("PMTiles directory exceeds %d decoded bytes", maxDirectoryDecodedBytes)
 	}
 	if raw.Len() != 0 {
 		return nil, fmt.Errorf("trailing gzip data in PMTiles directory")
+	}
+	return DeserializeEntriesRaw(decoded)
+}
+
+// DeserializeEntriesRaw validates an already decompressed PMTiles directory.
+// It shares the same allocation and field validation as DeserializeEntries,
+// without making uncompressed callers encode and decode a gzip wrapper.
+func DeserializeEntriesRaw(decoded []byte) ([]EntryV3, error) {
+	if len(decoded) > maxDirectoryDecodedBytes {
+		return nil, fmt.Errorf("PMTiles directory exceeds %d decoded bytes", maxDirectoryDecodedBytes)
 	}
 	input := bytes.NewReader(decoded)
 	count, err := binary.ReadUvarint(input)
@@ -76,7 +89,7 @@ func DeserializeEntries(data []byte) ([]EntryV3, error) {
 	}
 	// Every entry needs at least four one-byte varints. Check this before
 	// allocation so a forged count cannot force a large allocation.
-	if count > maxEntries || count > uint64(input.Len()/4) {
+	if count > maxDirectoryEntries || count > uint64(input.Len()/4) {
 		return nil, fmt.Errorf("invalid PMTiles directory entry count %d", count)
 	}
 	entries := make([]EntryV3, int(count))

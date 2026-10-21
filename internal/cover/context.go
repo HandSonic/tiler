@@ -14,6 +14,10 @@ import (
 // spans and streamed during Walk, so this does not limit the covered area.
 const maxBoundaryTiles = 1 << 20
 
+// Typed in-memory collections have no JSON byte budget. Cap nesting to catch
+// cycles and pathological recursive input before walking/counting it.
+const maxGeometryDepth = 128
+
 func gridFraction(p orb.Point, z maptile.Zoom) orb.Point {
 	f := maptile.Fraction(p, z)
 	limit := math.Nextafter(math.Exp2(float64(z)), 0)
@@ -37,7 +41,7 @@ func validateGeometry(ctx context.Context, geometry orb.Geometry) error {
 }
 
 func validateGeometryDepth(ctx context.Context, geometry orb.Geometry, depth int) error {
-	if depth > 128 {
+	if depth > maxGeometryDepth {
 		return fmt.Errorf("coverage geometry exceeds nesting budget")
 	}
 	point := func(p orb.Point) error {

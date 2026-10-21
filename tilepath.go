@@ -15,9 +15,13 @@ import (
 
 const defaultTilePath = "{z}/{x}/{y}.{format}"
 
-// Windows extended paths have a finite UTF-16 length even when every individual
-// component is legal. Bound templates before building a potentially huge regex.
-const maxRelativeTilePathUnits = 32760
+// Bound parser/regex work to 32K UTF-16 units. This is a parser budget, not
+// a guarantee that the full output path fits Windows (the dataset root adds
+// length too). Actual filesystem errors are still reported by the write.
+const maxTilePathUnits = 32 << 10
+
+// Keep individual components compatible with common Windows filesystems.
+const maxWindowsComponentUnits = 255
 
 type tilePathPart struct {
 	literal string
@@ -47,8 +51,8 @@ func compiledTilePath(pattern string) (*tilePathTemplate, error) {
 	if pattern == "" {
 		pattern = defaultTilePath
 	}
-	if len(pattern) > maxRelativeTilePathUnits*4 {
-		return nil, fmt.Errorf("tile path template exceeds the Windows extended path limit")
+	if len(pattern) > maxTilePathUnits*utf8.UTFMax {
+		return nil, fmt.Errorf("tile path template exceeds the 32K UTF-16 unit parser budget")
 	}
 	if cached, ok := tilePathTemplates.Load(pattern); ok {
 		return cached.(*tilePathTemplate), nil
@@ -173,8 +177,8 @@ func parseTilePath(pattern, relative string) (tile maptile.Tile, format string, 
 	if err != nil {
 		return tile, "", false, err
 	}
-	if len(relative) > maxRelativeTilePathUnits*4 {
-		return tile, "", true, fmt.Errorf("tile path exceeds the Windows extended path limit")
+	if len(relative) > maxTilePathUnits*utf8.UTFMax {
+		return tile, "", true, fmt.Errorf("tile path exceeds the 32K UTF-16 unit parser budget")
 	}
 	match := template.matcher.FindStringSubmatch(relative)
 	if match == nil {
@@ -283,14 +287,14 @@ func validateRelativeTilePath(relative string) error {
 	if relative == "" || strings.HasPrefix(relative, "/") || strings.Contains(relative, "\\") || !utf8.ValidString(relative) {
 		return fmt.Errorf("tile path must be a relative slash-separated path")
 	}
-	if len(relative) > maxRelativeTilePathUnits*4 || len(utf16.Encode([]rune(relative))) > maxRelativeTilePathUnits {
-		return fmt.Errorf("tile path exceeds the Windows extended path limit")
+	if len(relative) > maxTilePathUnits*utf8.UTFMax || len(utf16.Encode([]rune(relative))) > maxTilePathUnits {
+		return fmt.Errorf("tile path exceeds the 32K UTF-16 unit parser budget")
 	}
 	for _, segment := range strings.Split(relative, "/") {
 		if segment == "" || segment == "." || segment == ".." {
 			return fmt.Errorf("tile path cannot contain empty, . or .. segments")
 		}
-		if strings.TrimRight(segment, " .") != segment || len(utf16.Encode([]rune(segment))) > 255 {
+		if strings.TrimRight(segment, " .") != segment || len(utf16.Encode([]rune(segment))) > maxWindowsComponentUnits {
 			return fmt.Errorf("tile path segments must fit Windows filenames without trailing dots or spaces")
 		}
 		if strings.ContainsAny(segment, `<>:"|?*`) || strings.IndexFunc(segment, unicode.IsControl) >= 0 {

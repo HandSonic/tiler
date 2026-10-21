@@ -98,12 +98,23 @@ func TestDirectoryMatchesSpecVarintsAndRoundTrips(t *testing.T) {
 	if !bytes.Equal(raw, want) {
 		t.Fatalf("directory varints=%v want %v", raw, want)
 	}
-	got, err := DeserializeEntries(encoded)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(got, entries) {
-		t.Fatalf("directory=%+v want %+v", got, entries)
+	for _, source := range []struct {
+		name   string
+		data   []byte
+		decode func([]byte) ([]EntryV3, error)
+	}{
+		{"gzip", encoded, DeserializeEntries},
+		{"uncompressed", raw, DeserializeEntriesRaw},
+	} {
+		t.Run(source.name, func(t *testing.T) {
+			got, err := source.decode(source.data)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(got, entries) {
+				t.Fatalf("directory=%+v want %+v", got, entries)
+			}
+		})
 	}
 	empty, err := DeserializeEntries(SerializeEntries(nil))
 	if err != nil || len(empty) != 0 {

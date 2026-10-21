@@ -45,7 +45,7 @@ func archiveWalkPM(ctx context.Context, input string, visit archiveVisit) (map[s
 			return nil, fmt.Errorf("PMTiles section is outside the archive")
 		}
 	}
-	if header.RootOffset < pm.HeaderV3LenBytes || header.RootLength == 0 || header.RootOffset+header.RootLength > 16384 {
+	if header.RootOffset < pm.HeaderV3LenBytes || header.RootLength == 0 || header.RootOffset+header.RootLength > pmRootAreaBytes {
 		return nil, fmt.Errorf("PMTiles root directory must fit the first 16 KiB")
 	}
 	if header.MinZoom > header.MaxZoom || header.MaxZoom > 30 {
@@ -83,11 +83,11 @@ func archiveWalkPM(ctx context.Context, input string, visit archiveVisit) (map[s
 		}
 		return body, nil
 	}
-	metadataBytes, err := readSection(header.MetadataOffset, header.MetadataLength, 16<<20)
+	metadataBytes, err := readSection(header.MetadataOffset, header.MetadataLength, maxMetadataBytes)
 	if err != nil {
 		return nil, err
 	}
-	metadataBytes, err = archiveDecodePMBytes(metadataBytes, header.InternalCompression, 16<<20)
+	metadataBytes, err = archiveDecodePMBytes(metadataBytes, header.InternalCompression, maxMetadataBytes)
 	if err != nil {
 		return nil, fmt.Errorf("PMTiles metadata: %w", err)
 	}
@@ -217,47 +217,56 @@ func archiveWalkPM(ctx context.Context, input string, visit archiveVisit) (map[s
 	return metadata, nil
 }
 
-// Account for compressed input, the bounded preflight decoding, the codec's
-// decoding and its entry allocation before entering another directory level.
-// Returning releases the budget so an archive may contain arbitrarily many
-// leaves while its live directory working set stays bounded on 32-bit builds.
+// Charge input, decompressed bytes and the entry allocation before entering
+// another directory level. This bounds the directory working set on 32-bit
+// builds; it is not an exact limit on the process heap or gzip's internals.
 func archiveReadPMDirectory(data []byte, compression pm.Compression, budget, entryBudget uint64) ([]pm.EntryV3, uint64, error) {
-	if budget < uint64(len(data)) {
+	memory := uint64(len(data))
+	if memory > budget {
 		return nil, 0, fmt.Errorf("PMTiles live directory memory limit exceeded")
 	}
-	decodeLimit := int64((budget - uint64(len(data))) / 2)
-	decoded, err := archiveDecodePMBytes(data, compression, decodeLimit)
-	if err != nil {
-		return nil, 0, err
-	}
-	if uint64(len(decoded)) > uint64(decodeLimit) {
-		return nil, 0, fmt.Errorf("PMTiles live directory memory limit exceeded")
+	decoded := data
+	switch compression {
+	case pm.NoCompression:
+		// The decoded view shares the input buffer, so charge it only once.
+	case pm.Gzip:
+		raw := bytes.NewReader(data)
+		reader, err := gzip.NewReader(raw)
+		if err != nil {
+			return nil, 0, err
+		}
+		reader.Multistream(false)
+		limit := int64(budget - memory)
+		decoded, err = io.ReadAll(io.LimitReader(reader, limit+1))
+		closeErr := reader.Close()
+		if err != nil {
+			return nil, 0, err
+		}
+		if closeErr != nil {
+			return nil, 0, closeErr
+		}
+		if int64(len(decoded)) > limit {
+			return nil, 0, fmt.Errorf("PMTiles decompressed data exceeds safe read limit")
+		}
+		if raw.Len() != 0 {
+			return nil, 0, fmt.Errorf("trailing gzip data in PMTiles directory")
+		}
+		memory += uint64(len(decoded))
+	default:
+		return nil, 0, fmt.Errorf("unsupported PMTiles compression")
 	}
 	count, err := binary.ReadUvarint(bytes.NewReader(decoded))
 	if err != nil || count == 0 || count > entryBudget || count > uint64(len(decoded)/4) {
 		return nil, 0, fmt.Errorf("PMTiles live directory entry limit exceeded or invalid count")
 	}
-	encoded := data
-	if compression == pm.NoCompression {
-		// Gzip can be slightly larger than its input; leave fixed headroom
-		// before constructing the codec's canonical gzip representation.
-		if uint64(len(decoded))*3+count*24+65536 > budget {
-			return nil, 0, fmt.Errorf("PMTiles live directory memory limit exceeded")
-		}
-		encoded, err = archiveGzip(decoded)
-		if err != nil {
-			return nil, 0, err
-		}
-	}
-	memory := uint64(len(encoded)) + uint64(len(decoded))*2 + count*24
-	if memory > budget {
+	if count > (budget-memory)/pmEntryMemoryBytes {
 		return nil, 0, fmt.Errorf("PMTiles live directory memory limit exceeded")
 	}
-	entries, err := pm.DeserializeEntries(encoded)
+	entries, err := pm.DeserializeEntriesRaw(decoded)
 	if err != nil {
 		return nil, 0, err
 	}
-	return entries, memory, nil
+	return entries, memory + count*pmEntryMemoryBytes, nil
 }
 
 func archiveDecodePMBytes(body []byte, compression pm.Compression, limit int64) ([]byte, error) {

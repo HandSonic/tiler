@@ -26,28 +26,19 @@ func auditRealMVT() []byte {
 }
 
 func TestAuditMBTilesPBFEncodingMatchesStandard(t *testing.T) {
-	configureRegressionOutput(t)
+	dir := configureRegressionOutput(t)
 	viper.Set("output.format", "mbtiles")
 	viper.Set("output.name", "vector")
 	viper.Set("output.gzip_pbf", false)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write(auditRealMVT()) }))
 	defer server.Close()
 	task := NewTask([]Layer{{Zoom: 0, URL: server.URL, Collection: orb.Collection{orb.Point{0, 0}}}}, TileMap{Name: "vector", Format: PBF, Schema: "xyz", JSON: `{"vector_layers":[{"id":"test","fields":{}}]}`})
-	if err := task.Download(); err != nil {
-		// Explicit rejection is preferable to publishing nonstandard raw PBF.
-		return
+	t.Cleanup(task.Cancel)
+	if err := task.Download(); err == nil || !strings.Contains(err.Error(), "gzip") {
+		t.Fatalf("uncompressed PBF MBTiles must be rejected: %v", err)
 	}
-	db, err := sql.Open("sqlite3", task.File)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	var body []byte
-	if err := db.QueryRow("select tile_data from tiles").Scan(&body); err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.HasPrefix(body, []byte{0x1f, 0x8b}) {
-		t.Fatal("format=pbf MBTiles contains raw bytes; MBTiles 1.3 requires gzip-compressed MVT")
+	if _, err := os.Stat(filepath.Join(dir, "vector.mbtiles")); !os.IsNotExist(err) {
+		t.Fatalf("invalid encoding created a destination: %v", err)
 	}
 }
 
@@ -55,25 +46,11 @@ func TestAuditMBTilesPBFRequiresVectorMetadata(t *testing.T) {
 	input := filepath.Join(t.TempDir(), "tiles")
 	archiveTestWrite(t, filepath.Join(input, "0", "0", "0.pbf"), auditRealMVT())
 	output := filepath.Join(t.TempDir(), "vector.mbtiles")
-	if _, err := ConvertArchive(context.Background(), input, output, ArchiveConvertOptions{}); err != nil {
-		// A caller must supply the layer schema if it cannot be derived.
-		return
+	if _, err := ConvertArchive(context.Background(), input, output, ArchiveConvertOptions{}); err == nil || !strings.Contains(err.Error(), "vector_layers") {
+		t.Fatalf("PBF MBTiles without layer metadata must be rejected: %v", err)
 	}
-	db, err := sql.Open("sqlite3", output)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	var metadata string
-	if err := db.QueryRow("select value from metadata where name='json'").Scan(&metadata); err != nil {
-		t.Fatalf("successful PBF MBTiles has no required json/vector_layers metadata: %v", err)
-	}
-	var value map[string]interface{}
-	if err := json.Unmarshal([]byte(metadata), &value); err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := value["vector_layers"].([]interface{}); !ok {
-		t.Fatal("successful PBF MBTiles lacks required vector_layers array")
+	if _, err := os.Stat(output); !os.IsNotExist(err) {
+		t.Fatalf("missing vector metadata created a destination: %v", err)
 	}
 }
 
@@ -134,16 +111,26 @@ func TestAuditDownloadMBTilesMetadataUsesDatasetType(t *testing.T) {
 // A successful MBTiles export must validate layer field types and the optional
 // zoom range against the dataset actually exported, not a source's full range.
 func TestAuditMBTilesVectorSchemaMatchesExportedDataset(t *testing.T) {
-	for _, tc := range []struct{ name, schema string }{
-		{"invalid-field-type", `{"vector_layers":[{"id":"test","fields":{"name":"varchar"}}]}`},
-		{"source-wide-zooms", `{"vector_layers":[{"id":"test","fields":{},"minzoom":0,"maxzoom":14}]}`},
+	for _, tc := range []struct {
+		name, schema string
+		invalid      bool
+	}{
+		{"invalid-field-type", `{"vector_layers":[{"id":"test","fields":{"name":"varchar"}}]}`, true},
+		{"source-wide-zooms", `{"vector_layers":[{"id":"test","fields":{},"minzoom":0,"maxzoom":14}]}`, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			input := filepath.Join(t.TempDir(), "tiles")
 			archiveTestWrite(t, filepath.Join(input, "5", "0", "0.pbf"), auditRealMVT())
 			output := filepath.Join(t.TempDir(), "vector.mbtiles")
-			if _, err := ConvertArchive(context.Background(), input, output, ArchiveConvertOptions{Metadata: map[string]string{"json": tc.schema}}); err != nil {
+			_, err := ConvertArchive(context.Background(), input, output, ArchiveConvertOptions{Metadata: map[string]string{"json": tc.schema}})
+			if tc.invalid {
+				if err == nil || !strings.Contains(err.Error(), "field") {
+					t.Fatalf("invalid vector field must be rejected: %v", err)
+				}
 				return
+			}
+			if err != nil {
+				t.Fatalf("valid source-wide layer zooms were rejected: %v", err)
 			}
 			auditCheckMBVectorSchema(t, output)
 		})
@@ -154,8 +141,15 @@ func TestAuditMBTilesVectorSchemaMatchesExportedDataset(t *testing.T) {
 			defer server.Close()
 			task := NewTask([]Layer{{Zoom: 5, URL: server.URL, Collection: orb.Collection{orb.Point{0, 0}}}}, TileMap{Name: "vector", Format: PBF, Schema: "xyz", JSON: tc.schema})
 			t.Cleanup(task.Cancel)
-			if err := task.Download(); err != nil {
+			err := task.Download()
+			if tc.invalid {
+				if err == nil || !strings.Contains(err.Error(), "field") {
+					t.Fatalf("invalid vector field must be rejected: %v", err)
+				}
 				return
+			}
+			if err != nil {
+				t.Fatalf("valid source-wide layer zooms were rejected: %v", err)
 			}
 			auditCheckMBVectorSchema(t, task.File)
 		})
@@ -190,6 +184,9 @@ func auditCheckMBVectorSchema(t *testing.T, filename string) {
 	}
 	if err := json.Unmarshal([]byte(text), &metadata); err != nil {
 		t.Fatal(err)
+	}
+	if len(metadata.VectorLayers) != 1 || metadata.VectorLayers[0].ID != "test" {
+		t.Fatalf("export lost the input vector layer: %s", text)
 	}
 	for _, layer := range metadata.VectorLayers {
 		for name, typ := range layer.Fields {

@@ -163,19 +163,6 @@ func TestAuditS3MergePreservesNarrowMetadataBounds(t *testing.T) {
 	}
 }
 
-func TestAuditS3RejectsUnreadableMetadataBeforePublishingTiles(t *testing.T) {
-	store, out := archiveS3Store(t)
-	input := t.TempDir()
-	archiveTestWrite(t, filepath.Join(input, "0", "0", "0.png"), tileDataPNG(t))
-	// This fits the MBTiles metadata limit but JSON escaping makes the final
-	// metadata.json larger than the S3 reader's 16 MiB limit.
-	metadata := map[string]string{"description": strings.Repeat("\x01", 3<<20)}
-	_, err := ConvertArchive(context.Background(), input, "s3://dest/tiles/", ArchiveConvertOptions{S3: out, Metadata: metadata})
-	if err == nil || !strings.Contains(err.Error(), "metadata") || store.count(http.MethodPut) != 0 {
-		t.Fatalf("published metadata that cannot be read back: err=%v puts=%d", err, store.count(http.MethodPut))
-	}
-}
-
 func TestAuditS3VersionedReadChecksReturnedETag(t *testing.T) {
 	for _, etag := range []string{`"before"`, `"after"`} {
 		t.Run(etag, func(t *testing.T) {

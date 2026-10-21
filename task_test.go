@@ -25,7 +25,6 @@ func configureTaskTest(t *testing.T, output string) string {
 	viper.Set("output.format", output)
 	viper.Set("task.workers", 2)
 	viper.Set("task.savepipe", 4)
-	viper.Set("task.mergebuf", 2)
 	viper.Set("task.timedelay", 0)
 	dir := filepath.Join(t.TempDir(), "tiles")
 	viper.Set("output.directory", dir)

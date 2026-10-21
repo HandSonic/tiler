@@ -15,9 +15,23 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"unsafe"
 
 	pm "tiler/internal/pmtiles"
 )
+
+// PMTiles v3 requires the root directory to fit in the first 16 KiB.
+const pmRootAreaBytes = 16 << 10
+
+// A root pointer uses at most 26 varint bytes; 512 pointers plus the header
+// and gzip overhead fit within pmRootAreaBytes. Leaves batch at least 4096
+// entries to avoid creating many tiny directories.
+const maxPMRootEntries = 512
+const minPMLeafEntries = 4096
+
+// sizeof measures the actual entry allocation on both supported architectures;
+// encoded directory entries are varints and have a different on-disk size.
+const pmEntryMemoryBytes = uint64(unsafe.Sizeof(pm.EntryV3{}))
 
 // ArchiveConvertOptions controls the target archive. Format, when set, is the
 // target tile encoding; PNG/JPEG tiles are actually transcoded when necessary.
@@ -142,7 +156,7 @@ func archiveReadDirectoryMetadata(dir string) (map[string]string, error) {
 	if !info.Mode().IsRegular() {
 		return nil, fmt.Errorf("metadata.json must be a regular file")
 	}
-	if info.Size() > 16<<20 {
+	if info.Size() > maxMetadataBytes {
 		return nil, fmt.Errorf("metadata.json exceeds 16 MiB")
 	}
 	file, err := os.Open(path)
@@ -150,11 +164,11 @@ func archiveReadDirectoryMetadata(dir string) (map[string]string, error) {
 		return nil, err
 	}
 	defer file.Close()
-	data, err := io.ReadAll(io.LimitReader(file, 16*1024*1024+1))
+	data, err := io.ReadAll(io.LimitReader(file, maxMetadataBytes+1))
 	if err != nil {
 		return nil, err
 	}
-	if len(data) > 16*1024*1024 {
+	if len(data) > maxMetadataBytes {
 		return nil, fmt.Errorf("metadata.json exceeds 16 MiB")
 	}
 	var values map[string]json.RawMessage
@@ -180,7 +194,7 @@ func archiveReadMBMetadata(ctx context.Context, tx *sql.Tx) (map[string]string, 
 	if err := tx.QueryRowContext(ctx, "SELECT coalesce(sum(coalesce(length(CAST(name AS BLOB)),0) + coalesce(length(CAST(value AS BLOB)),0)),0) FROM metadata").Scan(&total); err != nil {
 		return nil, fmt.Errorf("read MBTiles metadata size: %w", err)
 	}
-	if total > 16<<20 {
+	if total > maxMetadataBytes {
 		return nil, fmt.Errorf("MBTiles metadata exceeds 16 MiB")
 	}
 	rows, err := tx.QueryContext(ctx, "SELECT name,value FROM metadata")
@@ -202,7 +216,7 @@ func archiveReadMBMetadata(ctx context.Context, tx *sql.Tx) (map[string]string, 
 func archiveValidateMetadataSize(metadata map[string]string) error {
 	total := 0
 	for key, value := range metadata {
-		if len(key) > 16<<20-total || len(value) > 16<<20-total-len(key) {
+		if len(key) > maxMetadataBytes-total || len(value) > maxMetadataBytes-total-len(key) {
 			return fmt.Errorf("MBTiles metadata exceeds 16 MiB")
 		}
 		total += len(key) + len(value)
@@ -470,8 +484,7 @@ func archiveMBTilesToPMTiles(ctx context.Context, input, output, work, targetFor
 			err = closeErr
 		}
 	}()
-	const rootArea = 16384
-	if _, err = outputFile.Seek(rootArea, io.SeekStart); err != nil {
+	if _, err = outputFile.Seek(pmRootAreaBytes, io.SeekStart); err != nil {
 		return result, err
 	}
 	leafFile, err := os.CreateTemp(work, "leaf-directory-*")
@@ -479,19 +492,17 @@ func archiveMBTilesToPMTiles(ctx context.Context, input, output, work, targetFor
 		return result, err
 	}
 	defer leafFile.Close()
-	// At most 512 leaf pointers make the compressed root fit into the first
-	// 16 KiB even when offsets/TileIDs need their maximum varint widths.
-	leafSize64 := (extent.count + 511) / 512
-	if leafSize64 < 4096 {
-		leafSize64 = 4096
+	leafSize64 := (extent.count + maxPMRootEntries - 1) / maxPMRootEntries
+	if leafSize64 < minPMLeafEntries {
+		leafSize64 = minPMLeafEntries
 	}
-	if leafSize64 > int64(int(^uint(0)>>1))/32 {
+	if leafSize64 > int64(int(^uint(0)>>1))/int64(pmEntryMemoryBytes) {
 		return result, fmt.Errorf("archive directory is too large for this build architecture")
 	}
 	leafSize := int(leafSize64)
-	useLeaves := extent.count > 512
+	useLeaves := extent.count > maxPMRootEntries
 	entries := make([]pm.EntryV3, 0, leafSize)
-	rootEntries := make([]pm.EntryV3, 0, 512)
+	rootEntries := make([]pm.EntryV3, 0, maxPMRootEntries)
 	var tileOffset, leafOffset uint64
 	flushLeaf := func() error {
 		if len(entries) == 0 {
@@ -599,21 +610,21 @@ func archiveMBTilesToPMTiles(ctx context.Context, input, output, work, targetFor
 	if err != nil {
 		return result, err
 	}
-	if len(metadataBytes) > 16<<20 {
+	if len(metadataBytes) > maxMetadataBytes {
 		return result, fmt.Errorf("PMTiles metadata exceeds 16 MiB")
 	}
 	metadataBytes, err = archiveGzip(metadataBytes)
 	if err != nil {
 		return result, err
 	}
-	if len(metadataBytes) > 16<<20 {
+	if len(metadataBytes) > maxMetadataBytes {
 		return result, fmt.Errorf("compressed PMTiles metadata exceeds 16 MiB")
 	}
 	rootBytes := pm.SerializeEntries(rootEntries)
-	if len(rootBytes)+pm.HeaderV3LenBytes > rootArea {
+	if len(rootBytes)+pm.HeaderV3LenBytes > pmRootAreaBytes {
 		return result, fmt.Errorf("PMTiles root directory exceeds first 16 KiB")
 	}
-	metadataOffset := uint64(rootArea) + tileOffset
+	metadataOffset := uint64(pmRootAreaBytes) + tileOffset
 	if _, err = outputFile.Write(metadataBytes); err != nil {
 		return result, err
 	}
@@ -623,7 +634,7 @@ func archiveMBTilesToPMTiles(ctx context.Context, input, output, work, targetFor
 	if err = archiveCopy(ctx, outputFile, leafFile); err != nil {
 		return result, err
 	}
-	header := pm.HeaderV3{SpecVersion: 3, RootOffset: pm.HeaderV3LenBytes, RootLength: uint64(len(rootBytes)), MetadataOffset: metadataOffset, MetadataLength: uint64(len(metadataBytes)), LeafDirectoryOffset: metadataOffset + uint64(len(metadataBytes)), LeafDirectoryLength: leafOffset, TileDataOffset: rootArea, TileDataLength: tileOffset, AddressedTilesCount: uint64(extent.count), TileEntriesCount: uint64(extent.count), TileContentsCount: uint64(extent.count), Clustered: true, InternalCompression: pm.Gzip, TileCompression: pm.NoCompression, MinZoom: uint8(extent.minZ), MaxZoom: uint8(extent.maxZ)}
+	header := pm.HeaderV3{SpecVersion: 3, RootOffset: pm.HeaderV3LenBytes, RootLength: uint64(len(rootBytes)), MetadataOffset: metadataOffset, MetadataLength: uint64(len(metadataBytes)), LeafDirectoryOffset: metadataOffset + uint64(len(metadataBytes)), LeafDirectoryLength: leafOffset, TileDataOffset: pmRootAreaBytes, TileDataLength: tileOffset, AddressedTilesCount: uint64(extent.count), TileEntriesCount: uint64(extent.count), TileContentsCount: uint64(extent.count), Clustered: true, InternalCompression: pm.Gzip, TileCompression: pm.NoCompression, MinZoom: uint8(extent.minZ), MaxZoom: uint8(extent.maxZ)}
 	switch targetFormat {
 	case PNG:
 		header.TileType = pm.Png

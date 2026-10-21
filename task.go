@@ -26,6 +26,10 @@ import (
 // MBTileVersion mbtiles版本号
 const MBTileVersion = "1.2"
 
+// Catch obvious misconfiguration before allocating pools and queues. This
+// count limit is not a process memory budget; large tiles need low concurrency.
+const maxTaskSlots = 1024
+
 // Task 下载任务
 type Task struct {
 	ID           string
@@ -43,12 +47,10 @@ type Task struct {
 	workerCount  int
 	savePipeSize int
 	timeDelay    int
-	bufSize      int
 	tileWG       sync.WaitGroup
 	saveWG       sync.WaitGroup
 	workers      chan maptile.Tile
 	savingpipe   chan Tile
-	tileSet      Set
 	outformat    string
 	tilePath     string
 	s3           *s3Output
@@ -88,10 +90,6 @@ func NewTask(layers []Layer, m TileMap) *Task {
 // NewTaskContext also cancels tile counting when the caller stops the task.
 func NewTaskContext(parent context.Context, layers []Layer, m TileMap) *Task {
 	return newDownloadTaskContext(parent, layers, m, nil)
-}
-
-func newDownloadTask(layers []Layer, m TileMap, manifest *FailureManifest) *Task {
-	return newDownloadTaskContext(context.Background(), layers, m, manifest)
 }
 
 func newDownloadTaskContext(parent context.Context, layers []Layer, m TileMap, manifest *FailureManifest) *Task {
@@ -227,12 +225,12 @@ func newDownloadTaskContext(parent context.Context, layers []Layer, m TileMap, m
 	task.workerCount = viper.GetInt("task.workers")
 	task.savePipeSize = viper.GetInt("task.savepipe")
 	task.timeDelay = viper.GetInt("task.timedelay")
-	if task.workerCount <= 0 || task.savePipeSize < 0 || task.timeDelay < 0 || viper.GetInt("task.mergebuf") < 0 {
-		task.initErr = fmt.Errorf("task.workers must be positive; savepipe, timedelay and mergebuf must be nonnegative")
+	if task.workerCount <= 0 || task.savePipeSize < 0 || task.timeDelay < 0 {
+		task.initErr = fmt.Errorf("task.workers must be positive; savepipe and timedelay must be nonnegative")
 		return &task
 	}
-	if task.workerCount > 1024 || task.savePipeSize > 1024 {
-		task.initErr = fmt.Errorf("task.workers and task.savepipe must not exceed 1024")
+	if task.workerCount > maxTaskSlots || task.savePipeSize > maxTaskSlots {
+		task.initErr = fmt.Errorf("task.workers and task.savepipe must not exceed %d", maxTaskSlots)
 		return &task
 	}
 	if int64(task.timeDelay) > math.MaxInt64/int64(time.Millisecond) {
@@ -241,8 +239,6 @@ func newDownloadTaskContext(parent context.Context, layers []Layer, m TileMap, m
 	}
 	task.workers = make(chan maptile.Tile, task.workerCount)
 	task.savingpipe = make(chan Tile, task.savePipeSize)
-	task.bufSize = viper.GetInt("task.mergebuf")
-	task.tileSet = Set{M: make(maptile.Set)}
 
 	task.outformat = strings.ToLower(viper.GetString("output.format"))
 	if task.outformat == "file" || task.outformat == "s3" {
@@ -364,7 +360,7 @@ func (task *Task) SetupMBTileTables() error {
 		return err
 	}
 	if !task.resume {
-		if err := archiveCheckDestinationSidecars(task.File); err != nil {
+		if err := checkSQLiteSidecars(task.File); err != nil {
 			return err
 		}
 	}
@@ -375,7 +371,7 @@ func (task *Task) SetupMBTileTables() error {
 		if err := task.ctx.Err(); err != nil {
 			return err
 		}
-		if err := archiveCheckDestinationSidecars(task.File); err != nil {
+		if err := checkSQLiteSidecars(task.File); err != nil {
 			return err
 		}
 		if err := os.Remove(task.File); err != nil && !os.IsNotExist(err) {
@@ -640,7 +636,9 @@ func (task *Task) claimTileSource(tile maptile.Tile, layerIndex int) error {
 	}
 	// Only zooms combining distinct sources need this index. Bound it to keep
 	// a large mixed-source job from exhausting memory before finding overlap.
-	const maxSourceCheckTiles = 1000000
+	// Only mixed-source zooms need this index. Bound its retained coordinates
+	// so overlap validation cannot grow for the entire download without limit.
+	const maxSourceCheckTiles = 1_000_000
 	if task.sourceTiles >= maxSourceCheckTiles {
 		return fmt.Errorf("mixed-source layers exceed the %d-tile overlap check limit; split their source layers into separate jobs", maxSourceCheckTiles)
 	}

@@ -307,15 +307,16 @@ func TestDownloadVectorLayerMergePreservesOmittedZoomLimits(t *testing.T) {
 }
 
 func TestDownloadMBMetadataChecksSizeBeforeLoadingValues(t *testing.T) {
-	db, err := sql.Open("sqlite3", filepath.Join(t.TempDir(), "large.mbtiles"))
+	db, err := sql.Open("sqlite3", ":memory:")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer db.Close()
+	db.SetMaxOpenConns(1)
 	if _, err := db.Exec("create table metadata (name text,value text)"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec("insert into metadata (name,value) values ('large',zeroblob(?))", (16<<20)+1); err != nil {
+	if _, err := db.Exec("insert into metadata (name,value) values ('large',zeroblob(?))", maxMetadataBytes+1); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := readDownloadMBMetadata(db); err == nil || !strings.Contains(err.Error(), "16 MiB") {

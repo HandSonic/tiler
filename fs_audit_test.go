@@ -174,10 +174,10 @@ func TestAuditGeoJSONRejectsOversizedFilesBeforeDecode(t *testing.T) {
 	}
 }
 
-func TestAuditTilePathRejectsBeyondWindowsExtendedLimit(t *testing.T) {
+func TestAuditTilePathRejectsOversizedTemplate(t *testing.T) {
 	pattern := strings.Repeat("a/", 17000) + "{z}/{x}/{y}"
 	if _, err := normalizeTilePath(pattern); err == nil {
-		t.Fatal("accepted a relative tile path beyond the Windows extended path limit")
+		t.Fatal("accepted a tile path exceeding the parser budget")
 	}
 }
 

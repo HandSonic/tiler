@@ -162,12 +162,13 @@ func TestAuditArchiveDirectoryMetadataRejectsNullAndSpecialFiles(t *testing.T) {
 }
 
 func TestAuditArchiveRejectsOversizedMBMetadata(t *testing.T) {
-	db, err := sql.Open("sqlite3", filepath.Join(t.TempDir(), "metadata.mbtiles"))
+	db, err := sql.Open("sqlite3", ":memory:")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	if _, err := db.Exec("CREATE TABLE metadata(name TEXT,value TEXT); INSERT INTO metadata VALUES('description',zeroblob(16777217))"); err != nil {
+	db.SetMaxOpenConns(1)
+	if _, err := db.Exec("CREATE TABLE metadata(name TEXT,value TEXT); INSERT INTO metadata VALUES('description',zeroblob(?))", maxMetadataBytes+1); err != nil {
 		t.Fatal(err)
 	}
 	tx, err := db.Begin()
@@ -359,14 +360,15 @@ func TestAuditArchiveMergedLayerKeepsUnspecifiedZoomBounds(t *testing.T) {
 }
 
 func TestAuditArchiveMetadataSizeCountsNULLAdjacentValues(t *testing.T) {
-	for _, values := range []string{"NULL,zeroblob(16777217)", "zeroblob(16777217),NULL"} {
+	for _, values := range []string{"NULL,zeroblob(?)", "zeroblob(?),NULL"} {
 		t.Run(values, func(t *testing.T) {
-			db, err := sql.Open("sqlite3", filepath.Join(t.TempDir(), "metadata.mbtiles"))
+			db, err := sql.Open("sqlite3", ":memory:")
 			if err != nil {
 				t.Fatal(err)
 			}
 			defer db.Close()
-			if _, err := db.Exec("CREATE TABLE metadata(name TEXT,value TEXT); INSERT INTO metadata VALUES(" + values + ")"); err != nil {
+			db.SetMaxOpenConns(1)
+			if _, err := db.Exec("CREATE TABLE metadata(name TEXT,value TEXT); INSERT INTO metadata VALUES("+values+")", maxMetadataBytes+1); err != nil {
 				t.Fatal(err)
 			}
 			tx, err := db.Begin()

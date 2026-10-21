@@ -29,7 +29,6 @@ func configureRegressionOutput(t *testing.T) string {
 	dir := t.TempDir()
 	viper.Set("task.workers", 2)
 	viper.Set("task.savepipe", 1)
-	viper.Set("task.mergebuf", 1)
 	viper.Set("task.timedelay", 0)
 	viper.Set("task.timeout_seconds", 1)
 	viper.Set("task.retries", 0)
