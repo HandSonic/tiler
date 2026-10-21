@@ -88,7 +88,7 @@ func TestDownloadAppendRegionsPreservesTilesAndExtendsCoverage(t *testing.T) {
 			defer server.Close()
 			template := server.URL + "/{z}/{x}/{y}"
 			regionA := Layer{Zoom: 1, URL: template, Collection: orb.Collection{orb.Point{-90, 45}}}
-			first := NewTask([]Layer{regionA}, TileMap{Name: "region A", Format: PNG, Schema: "xyz"})
+			first := NewTask([]Layer{regionA}, TileMap{Name: "region A", Format: PNG, Schema: "xyz", JSON: `{"center":[-90,45,1],"custom":"keep","custom_id":9007199254740993,"nested":{"id":9007199254740993}}`})
 			t.Cleanup(first.Cancel)
 			if !first.resume {
 				t.Fatal("append did not enable tile resume")
@@ -126,6 +126,17 @@ func TestDownloadAppendRegionsPreservesTilesAndExtendsCoverage(t *testing.T) {
 			metadata := appendReadMetadata(t, testcase.kind, next.File)
 			if metadata["name"] != "region A" || metadata["id"] != first.ID || metadata["minzoom"] != "1" || metadata["maxzoom"] != "2" || metadata["bounds"] != "-90.000000,-45.000000,90.000000,45.000000" {
 				t.Fatalf("merged metadata=%v", metadata)
+			}
+			var tileJSON struct {
+				Center []float64 `json:"center"`
+				Custom string    `json:"custom"`
+			}
+			if err := json.Unmarshal([]byte(metadata["json"]), &tileJSON); err != nil || len(tileJSON.Center) != 3 || tileJSON.Center[0] != 0 || tileJSON.Center[1] != 0 || tileJSON.Center[2] != 1 || tileJSON.Custom != "keep" {
+				t.Fatalf("TileJSON center/custom field not merged: %+v, %v", tileJSON, err)
+			}
+			var raw map[string]json.RawMessage
+			if err := json.Unmarshal([]byte(metadata["json"]), &raw); err != nil || string(raw["custom_id"]) != "9007199254740993" || string(raw["nested"]) != `{"id":9007199254740993}` {
+				t.Errorf("custom integers rounded: %s, %v", metadata["json"], err)
 			}
 		})
 	}

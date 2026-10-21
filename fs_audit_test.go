@@ -206,3 +206,39 @@ func TestAuditAtomicFileReplacementPreservesExistingMode(t *testing.T) {
 		t.Fatalf("replacement changed readable tile permissions: %o", info.Mode().Perm())
 	}
 }
+
+func TestAuditArchiveReplacementPreservesExistingMode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX mode preservation")
+	}
+	input := t.TempDir()
+	archiveTestWrite(t, filepath.Join(input, "0", "0", "0.png"), tileDataPNG(t))
+	for _, tt := range []struct {
+		kind   string
+		append bool
+	}{{"file", true}, {"mbtiles", false}, {"pmtiles", true}} {
+		t.Run(tt.kind, func(t *testing.T) {
+			output := filepath.Join(t.TempDir(), "output."+tt.kind)
+			if _, err := ConvertArchive(context.Background(), input, output, ArchiveConvertOptions{OutputKind: tt.kind}); err != nil {
+				t.Fatal(err)
+			}
+			path := output
+			if tt.kind == "file" {
+				path = filepath.Join(output, "metadata.json")
+			}
+			if err := os.Chmod(path, 0640); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := ConvertArchive(context.Background(), input, output, ArchiveConvertOptions{OutputKind: tt.kind, Append: tt.append, Overwrite: !tt.append}); err != nil {
+				t.Fatal(err)
+			}
+			info, err := os.Stat(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if info.Mode().Perm() != 0640 {
+				t.Fatalf("conversion changed existing permissions: %o", info.Mode().Perm())
+			}
+		})
+	}
+}

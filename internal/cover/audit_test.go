@@ -33,6 +33,88 @@ func TestAuditCoverageWorldEdgesStayInsideTileMatrix(t *testing.T) {
 	}
 }
 
+func TestAuditSouthernWorldEdgeKeepsFractionalLastRow(t *testing.T) {
+	// In the z3 Mercator grid this segment runs from (1,4) to (7,8).
+	// It crosses the bottom row before x=6; projecting its endpoint to y=7
+	// instead of the southern edge would miss tile 5/7.
+	line := orb.LineString{{-135, 0}, {135, -90}}
+	tiles := make(maptile.Set)
+	if err := Walk(context.Background(), orb.Collection{line}, 3, func(tile maptile.Tile) error {
+		tiles[tile] = true
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !tiles[maptile.New(5, 7, 3)] {
+		t.Fatal("southern endpoint was projected to the top of the last tile row")
+	}
+	for _, zoom := range []maptile.Zoom{0, 30} {
+		n := float64(uint64(1) << zoom)
+		for _, point := range []orb.Point{{-180, 90}, {180, -90}, {-180, 86}, {180, -86}} {
+			fraction := gridFraction(point, zoom)
+			// This also rejects NaN and infinities without duplicating the
+			// projection formula used by the implementation.
+			if !(fraction[0] >= 0 && fraction[0] < n && fraction[1] >= 0 && fraction[1] < n) {
+				t.Fatalf("polar projection is outside z%d grid: %v -> %v", zoom, point, fraction)
+			}
+			wantY := uint32(0)
+			if point[1] < 0 {
+				wantY = uint32(uint64(1)<<zoom) - 1
+			}
+			if tile := gridAt(point, zoom); tile.Y != wantY || !tile.Valid() {
+				t.Fatalf("polar tile at z%d: %v -> %v, want row %d", zoom, point, tile, wantY)
+			}
+		}
+	}
+}
+
+func TestAuditLineCornersHaveDirectionIndependentCoverage(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		line orb.LineString
+		want [][2]uint32
+	}{
+		{"both axes increasing", orb.LineString{{-180, 90}, {-135, 0}}, [][2]uint32{{0, 0}, {0, 1}, {0, 2}, {0, 3}, {1, 4}}},
+		{"axes in opposite directions", orb.LineString{{-180, 0}, {0, 90}}, [][2]uint32{{0, 4}, {0, 3}, {1, 3}, {1, 2}, {2, 2}, {2, 1}, {3, 1}, {3, 0}, {4, 0}}},
+		{"rounded crossings", orb.LineString{{180, -90}, {-90, 66.51326044311186}}, nil},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var forward maptile.Set
+			for _, line := range []orb.LineString{tt.line, {tt.line[1], tt.line[0]}} {
+				got := make(maptile.Set)
+				if err := Walk(context.Background(), orb.Collection{line}, 3, func(tile maptile.Tile) error {
+					got[tile] = true
+					return nil
+				}); err != nil {
+					t.Fatal(err)
+				}
+				if forward != nil {
+					if len(got) != len(forward) {
+						t.Fatalf("line direction changed coverage: %v / %v", forward, got)
+					}
+					for tile := range forward {
+						if !got[tile] {
+							t.Fatalf("reversed line missed %v", tile)
+						}
+					}
+				}
+				forward = got
+				if tt.want == nil {
+					continue
+				}
+				if len(got) != len(tt.want) {
+					t.Fatalf("line %v covered %v, want grid coordinates %v", line, got, tt.want)
+				}
+				for _, coordinate := range tt.want {
+					if !got[maptile.New(coordinate[0], coordinate[1], 3)] {
+						t.Fatalf("line %v missed grid coordinate %v", line, coordinate)
+					}
+				}
+			}
+		})
+	}
+}
+
 // This context cancels after a deterministic number of checks, including the
 // polygon boundary preparation that happens before the first tile is visited.
 type auditCancelContext struct {

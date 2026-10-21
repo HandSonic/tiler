@@ -33,6 +33,9 @@ func (task *Task) saveFileMetadata() error {
 	if err != nil {
 		return fmt.Errorf("encode file metadata: %w", err)
 	}
+	if len(data)+1 > maxMetadataBytes {
+		return fmt.Errorf("output metadata.json exceeds 16 MiB")
+	}
 	mode, err := replacementOutputMode(filepath.Join(task.File, "metadata.json"))
 	if err != nil {
 		return err

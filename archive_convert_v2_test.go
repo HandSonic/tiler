@@ -130,7 +130,7 @@ func TestArchiveV2AppendPreservesRegionAndUnionsMetadata(t *testing.T) {
 	regionA := t.TempDir()
 	regionB := t.TempDir()
 	archiveTestWrite(t, filepath.Join(regionA, "1", "0", "0.png"), red)
-	archiveTestWrite(t, filepath.Join(regionA, "metadata.json"), []byte(`{"name":"all-regions","bounds":"-170,5,-10,80"}`))
+	archiveTestWrite(t, filepath.Join(regionA, "metadata.json"), []byte(`{"name":"all-regions","bounds":"-170,5,-10,80","json":{"bounds":[-170,5,-10,80],"center":[-90,45,1],"minzoom":1,"maxzoom":1,"custom":"keep","custom_id":9007199254740993,"nested":{"id":9007199254740993}}}`))
 	archiveTestWrite(t, filepath.Join(regionB, "1", "0", "0.png"), green)
 	archiveTestWrite(t, filepath.Join(regionB, "2", "3", "3.png"), blue)
 	archiveTestWrite(t, filepath.Join(regionB, "metadata.json"), []byte(`{"name":"region-b","bounds":"100,-80,170,-5"}`))
@@ -165,6 +165,40 @@ func TestArchiveV2AppendPreservesRegionAndUnionsMetadata(t *testing.T) {
 			bounds, err := archiveNumbers(metadata["bounds"], 4)
 			if err != nil || bounds[0] > -170 || bounds[1] > -80 || bounds[2] < 170 || bounds[3] < 80 {
 				t.Fatalf("bounds shrank: %v %v", bounds, err)
+			}
+			var tileJSON map[string]interface{}
+			if kind == "pmtiles" {
+				// Read the actual JSON: archiveWalkPM derives coverage from the
+				// header and would mask stale TileJSON coverage fields.
+				_, _, tileJSON = archiveTestReadPM(t, output)
+			} else if err := json.Unmarshal([]byte(metadata["json"]), &tileJSON); err != nil {
+				t.Fatal(err)
+			}
+			jsonBounds, _ := tileJSON["bounds"].([]interface{})
+			jsonCenter, _ := tileJSON["center"].([]interface{})
+			if _, hasBounds := tileJSON["bounds"]; hasBounds && (len(jsonBounds) != 4 || jsonBounds[0].(float64) > -170 || jsonBounds[1].(float64) > -80 || jsonBounds[2].(float64) < 170 || jsonBounds[3].(float64) < 80) {
+				t.Errorf("TileJSON coverage stayed at region A: %v", tileJSON)
+			}
+			for key, want := range map[string]float64{"minzoom": 1, "maxzoom": 2} {
+				if value, exists := tileJSON[key]; exists && value != want {
+					t.Errorf("TileJSON %s stayed at region A: %v", key, tileJSON)
+				}
+			}
+			if _, hasCenter := tileJSON["center"]; hasCenter && (len(jsonCenter) != 3 || jsonCenter[0] != float64(0) || jsonCenter[1] != float64(0) || jsonCenter[2] != float64(1)) {
+				t.Errorf("TileJSON center or custom field changed incorrectly: %v", tileJSON)
+			}
+			if tileJSON["custom"] != "keep" || (kind != "pmtiles" && (len(jsonBounds) == 0 || len(jsonCenter) == 0)) {
+				t.Errorf("TileJSON fields were lost: %v", tileJSON)
+			}
+			if kind == "pmtiles" {
+				if metadata["custom_id"] != "9007199254740993" || !strings.Contains(metadata["nested"], "9007199254740993") {
+					t.Errorf("PMTiles custom integers rounded: %v", metadata)
+				}
+			} else {
+				var raw map[string]json.RawMessage
+				if err := json.Unmarshal([]byte(metadata["json"]), &raw); err != nil || string(raw["custom_id"]) != "9007199254740993" || string(raw["nested"]) != `{"id":9007199254740993}` {
+					t.Errorf("custom integers rounded: %s, %v", metadata["json"], err)
+				}
 			}
 			if kind == "file" {
 				body, err := os.ReadFile(filepath.Join(output, "sentinel.txt"))
@@ -459,6 +493,21 @@ func TestArchiveV2RejectsAncestorDirectoryOutputAndOversizeTile(t *testing.T) {
 	}
 	if _, err := convertLocalArchive(ctx, huge, filepath.Join(t.TempDir(), "out.mbtiles"), ArchiveConvertOptions{}); err == nil || !strings.Contains(err.Error(), "64 MiB") {
 		t.Fatalf("oversize tile accepted: %v", err)
+	}
+	// SQLite TEXT length stops at the first NUL. Count encoded bytes before
+	// fetching tile_data, even when a malformed archive stores it as TEXT.
+	textArchive := filepath.Join(t.TempDir(), "text.mbtiles")
+	db, err := archiveOpenSQLite(textArchive, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(fmt.Sprintf("CREATE TABLE metadata(name TEXT,value TEXT); INSERT INTO metadata VALUES('format','png'); CREATE VIEW tiles AS SELECT 0 AS zoom_level,0 AS tile_column,0 AS tile_row,CAST(zeroblob(%d) AS TEXT) AS tile_data", maxTileDataBytes+1))
+	closeErr := db.Close()
+	if err != nil || closeErr != nil {
+		t.Fatalf("create oversized TEXT fixture: %v; close: %v", err, closeErr)
+	}
+	if _, err := convertLocalArchive(ctx, textArchive, filepath.Join(t.TempDir(), "out.mbtiles"), ArchiveConvertOptions{}); err == nil || !strings.Contains(err.Error(), "input limit") {
+		t.Fatalf("oversize TEXT tile was not rejected before loading its bytes: %v", err)
 	}
 }
 

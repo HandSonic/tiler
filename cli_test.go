@@ -77,6 +77,7 @@ savepipe = 1
 retries = 0
 [tm]
 name = "cli-map"
+description = "CLI map description"
 format = "png"
 schema = "xyz"
 url = %q
@@ -91,6 +92,16 @@ geojson = %q
 	}
 	if calls.Load() != 2 {
 		t.Fatalf("initial requests = %d", calls.Load())
+	}
+	db, err := sql.Open("sqlite3", filepath.Join(directory, "cli.mbtiles"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var description string
+	err = db.QueryRow("select value from metadata where name='description'").Scan(&description)
+	db.Close()
+	if err != nil || description != "CLI map description" {
+		t.Fatalf("configured description did not reach output: %q, %v", description, err)
 	}
 	report := filepath.Join(directory, "cli.mbtiles.failures.json")
 	if _, err := os.Stat(report); err != nil {

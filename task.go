@@ -97,12 +97,13 @@ func newDownloadTaskContext(parent context.Context, layers []Layer, m TileMap, m
 	id, _ := shortid.Generate()
 
 	task := Task{
-		ID:      id,
-		Name:    m.Name,
-		Layers:  layers,
-		Min:     m.Min,
-		Max:     m.Max,
-		TileMap: m,
+		ID:          id,
+		Name:        m.Name,
+		Description: m.Description,
+		Layers:      layers,
+		Min:         m.Min,
+		Max:         m.Max,
+		TileMap:     m,
 	}
 
 	task.ctx, task.cancel = context.WithCancel(parent)
@@ -374,7 +375,7 @@ func (task *Task) SetupMBTileTables() error {
 			return err
 		}
 	}
-	db, err := sql.Open("sqlite3", task.File)
+	db, err := archiveOpenSQLite(task.File, false)
 	if err != nil {
 		return err
 	}
@@ -384,8 +385,7 @@ func (task *Task) SetupMBTileTables() error {
 			db.Close()
 		}
 	}()
-	// Serializing reads and writes also prevents SQLite locking races in resume mode.
-	db.SetMaxOpenConns(1)
+	// archiveOpenSQLite serializes reads and writes for resume mode too.
 	if existing {
 		previous, err := readDownloadMBMetadata(db)
 		if err != nil {

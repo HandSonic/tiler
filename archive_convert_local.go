@@ -319,6 +319,15 @@ func convertLocalArchive(ctx context.Context, input, output string, opts Archive
 		if err := archiveCheckArchiveDestination(destination, kind); err != nil {
 			return result, err
 		}
+		if existing {
+			mode, err := replacementOutputMode(destination)
+			if err != nil {
+				return result, err
+			}
+			if err := os.Chmod(staged, mode); err != nil {
+				return result, fmt.Errorf("preserve archive permissions: %w", err)
+			}
+		}
 		err = os.Rename(staged, destination)
 	} else {
 		err = archivePublishNoReplace(staged, destination)
@@ -596,7 +605,7 @@ func archiveWalkMB(ctx context.Context, input string, visit archiveVisit) (map[s
 	if err != nil {
 		return nil, err
 	}
-	rows, err := tx.QueryContext(ctx, "SELECT zoom_level,tile_column,tile_row,CASE WHEN length(tile_data)<=? THEN tile_data ELSE NULL END,length(tile_data) FROM tiles", maxTileDataBytes)
+	rows, err := tx.QueryContext(ctx, "SELECT zoom_level,tile_column,tile_row,CASE WHEN length(CAST(tile_data AS BLOB))<=? THEN tile_data ELSE NULL END,length(CAST(tile_data AS BLOB)) FROM tiles", maxTileDataBytes)
 	if err != nil {
 		return nil, err
 	}
@@ -695,6 +704,10 @@ func archiveExportFiles(ctx context.Context, input, output, pattern string, appe
 }
 
 func archiveWriteFileAtomic(destination string, body []byte) error {
+	mode, err := replacementOutputMode(destination)
+	if err != nil {
+		return err
+	}
 	file, err := os.CreateTemp(filepath.Dir(destination), ".tiler-tile-*")
 	if err != nil {
 		return err
@@ -703,6 +716,10 @@ func archiveWriteFileAtomic(destination string, body []byte) error {
 	if _, err := file.Write(body); err != nil {
 		file.Close()
 		return err
+	}
+	if err := file.Chmod(mode); err != nil {
+		file.Close()
+		return fmt.Errorf("preserve output permissions: %w", err)
 	}
 	if err := file.Sync(); err != nil {
 		file.Close()

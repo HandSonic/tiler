@@ -19,8 +19,15 @@ const maxBoundaryTiles = 1 << 20
 const maxGeometryDepth = 128
 
 func gridFraction(p orb.Point, z maptile.Zoom) orb.Point {
-	f := maptile.Fraction(p, z)
-	limit := math.Nextafter(math.Exp2(float64(z)), 0)
+	n := math.Exp2(float64(z))
+	siny := math.Sin(p[1] * math.Pi / 180)
+	// Project before clipping. orb's old Fraction clips the southern latitude
+	// to n-1, losing the last row's fractional position for line traversal.
+	f := orb.Point{
+		(p[0]/360 + 0.5) * n,
+		(0.5 + 0.5*math.Log((1+siny)/(1-siny))/(-2*math.Pi)) * n,
+	}
+	limit := math.Nextafter(n, 0)
 	for i := range f {
 		if f[i] < 0 {
 			f[i] = 0

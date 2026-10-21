@@ -106,8 +106,8 @@ func validateDownloadMBMetadata(metadata map[string]string) error {
 	if strings.EqualFold(strings.TrimSpace(metadata["format"]), PBF) {
 		// MBTiles requires the JSON metadata entry, rather than a separate
 		// top-level vector_layers row, for describing vector tile layers.
-		var description map[string]interface{}
-		if err := json.Unmarshal([]byte(metadata["json"]), &description); err != nil || description == nil {
+		description, err := decodeTileJSONMetadata(metadata["json"])
+		if err != nil {
 			return fmt.Errorf("PBF MBTiles requires json metadata containing vector_layers")
 		}
 		if _, err := mergeDownloadVectorLayers(nil, description["vector_layers"]); err != nil {
@@ -315,9 +315,11 @@ func downloadMetadataZoom(text string) (int, error) {
 func decodeDownloadVectorMetadata(metadata map[string]string) (map[string]interface{}, error) {
 	result := make(map[string]interface{})
 	if text := strings.TrimSpace(metadata["json"]); text != "" {
-		if err := json.Unmarshal([]byte(text), &result); err != nil || result == nil {
+		parsed, err := decodeTileJSONMetadata(text)
+		if err != nil {
 			return nil, fmt.Errorf("vector json metadata must be a JSON object")
 		}
+		result = parsed
 		if layers, exists := result["vector_layers"]; exists && layers == nil {
 			return nil, fmt.Errorf("vector_layers must be a JSON array")
 		}
@@ -374,21 +376,41 @@ func mergeDownloadVectorMetadata(existing, incoming, result map[string]string) e
 	if len(oldJSON) == 0 {
 		return nil
 	}
-	// Keep optional full TileJSON coverage consistent with its MBTiles fields.
-	if _, exists := oldJSON["bounds"]; exists {
-		bounds, _ := downloadMetadataBounds(result["bounds"])
-		oldJSON["bounds"] = bounds
-	}
-	for _, key := range []string{"minzoom", "maxzoom"} {
-		if _, exists := oldJSON[key]; exists {
-			oldJSON[key], _ = strconv.Atoi(result[key])
-		}
+	if err := syncTileJSONCoverage(oldJSON, result); err != nil {
+		return err
 	}
 	encoded, err := json.Marshal(oldJSON)
 	if err != nil {
 		return err
 	}
 	result["json"] = string(encoded)
+	return nil
+}
+
+// Keep existing full TileJSON coverage fields consistent with the normalized
+// dataset metadata, without adding optional fields or changing custom keys.
+func syncTileJSONCoverage(object map[string]interface{}, metadata map[string]string) error {
+	for _, field := range []struct {
+		name  string
+		count int
+	}{{"bounds", 4}, {"center", 3}} {
+		if _, exists := object[field.name]; exists {
+			numbers, err := archiveNumbers(metadata[field.name], field.count)
+			if err != nil {
+				return err
+			}
+			object[field.name] = numbers
+		}
+	}
+	for _, key := range []string{"minzoom", "maxzoom"} {
+		if _, exists := object[key]; exists {
+			zoom, err := strconv.Atoi(metadata[key])
+			if err != nil {
+				return err
+			}
+			object[key] = zoom
+		}
+	}
 	return nil
 }
 

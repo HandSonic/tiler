@@ -229,9 +229,11 @@ func archiveValidateMetadataSize(metadata map[string]string) error {
 func archiveNormalizeMBVectorMetadata(metadata map[string]string, minZoom, maxZoom int) error {
 	object := make(map[string]interface{})
 	if value := strings.TrimSpace(metadata["json"]); value != "" {
-		if err := json.Unmarshal([]byte(value), &object); err != nil || object == nil {
+		parsed, err := decodeTileJSONMetadata(value)
+		if err != nil {
 			return fmt.Errorf("PBF MBTiles requires json metadata containing vector_layers")
 		}
+		object = parsed
 	}
 	if value := strings.TrimSpace(metadata["vector_layers"]); value != "" {
 		var layers interface{}
@@ -250,6 +252,28 @@ func archiveNormalizeMBVectorMetadata(metadata map[string]string, minZoom, maxZo
 	metadata["json"] = string(encoded)
 	delete(metadata, "vector_layers")
 	return nil
+}
+
+// Decode only the vector schema used by the validators. Other TileJSON values
+// remain raw JSON, so re-encoding cannot round custom integers through float64.
+func decodeTileJSONMetadata(text string) (map[string]interface{}, error) {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(text), &raw); err != nil || raw == nil {
+		return nil, fmt.Errorf("metadata json must be a JSON object")
+	}
+	object := make(map[string]interface{}, len(raw))
+	for key, value := range raw {
+		if key == "vector_layers" {
+			var layers interface{}
+			if err := json.Unmarshal(value, &layers); err != nil {
+				return nil, err
+			}
+			object[key] = layers
+		} else {
+			object[key] = value
+		}
+	}
+	return object, nil
 }
 
 // MBTiles 1.3 restricts field types and layer zooms more tightly than the
@@ -335,6 +359,24 @@ func archiveCompleteMetadata(metadata map[string]string, format, name string, ex
 			center[2] = float64(extent.minZ)
 		}
 		metadata["center"] = archiveBoundsText(center[:2]) + "," + strconv.Itoa(int(center[2]))
+	}
+	if value := strings.TrimSpace(metadata["json"]); value != "" {
+		var raw map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(value), &raw); err != nil || raw == nil {
+			return fmt.Errorf("metadata json must be a JSON object")
+		}
+		object := make(map[string]interface{}, len(raw))
+		for key, value := range raw {
+			object[key] = value
+		}
+		if err := syncTileJSONCoverage(object, metadata); err != nil {
+			return err
+		}
+		encoded, err := json.Marshal(object)
+		if err != nil {
+			return err
+		}
+		metadata["json"] = string(encoded)
 	}
 	return nil
 }
@@ -561,11 +603,9 @@ func archiveWritePMTiles(ctx context.Context, input, output, work string) (resul
 	}
 	jsonMetadata := make(map[string]interface{})
 	if value := strings.TrimSpace(metadata["json"]); value != "" {
-		if err = json.Unmarshal([]byte(value), &jsonMetadata); err != nil {
+		jsonMetadata, err = decodeTileJSONMetadata(value)
+		if err != nil {
 			return result, fmt.Errorf("invalid vector JSON metadata: %w", err)
-		}
-		if jsonMetadata == nil {
-			return result, fmt.Errorf("MBTiles metadata json must be an object")
 		}
 	}
 	// Explicit metadata entries override values from the optional JSON object.

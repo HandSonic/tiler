@@ -19,8 +19,6 @@ func lineWalk(
 	emit func(maptile.Tile) error,
 ) ([][2]uint32, error) {
 
-	inf := math.Inf(1)
-
 	prevX := -1.0
 	prevY := -1.0
 
@@ -65,26 +63,14 @@ func lineWalk(
 		x = math.Floor(start[0])
 		y = math.Floor(start[1])
 
-		tMaxX := inf
-		if dx != 0 {
-			d := 0.0
-			if dx > 0 {
-				d = 1.0
-			}
-			tMaxX = math.Abs((d + x - start[0]) / dx)
+		// Use one endpoint order for comparisons in either traversal direction.
+		// The same grid corner then uses identical floating-point arithmetic,
+		// rather than accumulating direction-dependent crossing times.
+		origin, end := start, stop
+		if origin[0] > end[0] || (origin[0] == end[0] && origin[1] > end[1]) {
+			origin, end = end, origin
 		}
-
-		tMaxY := inf
-		if dy != 0 {
-			d := 0.0
-			if dy > 0 {
-				d = 1.0
-			}
-			tMaxY = math.Abs((d + y - start[1]) / dy)
-		}
-
-		tdx := math.Abs(sx / dx)
-		tdy := math.Abs(sy / dy)
+		lineDX, lineDY := end[0]-origin[0], end[1]-origin[1]
 
 		if x != prevX || y != prevY {
 			// set[maptile.New(uint32(x), uint32(y), zoom)] = true
@@ -102,11 +88,24 @@ func lineWalk(
 		}
 
 		for x != math.Floor(stop[0]) || y != math.Floor(stop[1]) {
-			if x != math.Floor(stop[0]) && (y == math.Floor(stop[1]) || tMaxX < tMaxY) {
-				tMaxX += tdx
+			nextX, nextY := x, y
+			if sx > 0 {
+				nextX++
+			}
+			if sy > 0 {
+				nextY++
+			}
+			cross := (nextX-origin[0])*lineDY - (nextY-origin[1])*lineDX
+			// At a grid corner, use the point's floor-based tile ownership.
+			// Same-sign axes cross together; opposite-sign axes visit the
+			// corner's tile by stepping the increasing axis first. Always
+			// taking Y first emits different side tiles when reversed.
+			if x != math.Floor(stop[0]) && y != math.Floor(stop[1]) && cross == 0 && sx == sy {
+				x += sx
+				y += sy
+			} else if x != math.Floor(stop[0]) && (y == math.Floor(stop[1]) || cross*sy < 0 || (cross == 0 && sx > 0)) {
 				x += sx
 			} else {
-				tMaxY += tdy
 				y += sy
 			}
 

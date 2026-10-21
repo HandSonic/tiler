@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -49,6 +50,72 @@ func TestAuditCanceledTaskDoesNotMutateExistingOutput(t *testing.T) {
 				t.Fatalf("canceled task changed its existing output: %v", err)
 			}
 		})
+	}
+}
+
+func TestAuditFileDownloadRejectsUnreadableMetadataBeforePublishing(t *testing.T) {
+	dir := configureRegressionOutput(t)
+	var requests atomic.Int32
+	body := tileDataPNG(t)
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		w.Write(body)
+	}))
+	defer source.Close()
+	// The source fits the input budget, but JSON escaping expands the output.
+	task := NewTask([]Layer{{Zoom: 0, Collection: orb.Collection{orb.Point{0, 0}}}}, TileMap{
+		Name: "metadata-limit", URL: source.URL, Format: PNG, Description: strings.Repeat("<", 3<<20),
+	})
+	t.Cleanup(task.Cancel)
+	task.File = filepath.Join(dir, "existing")
+	if err := os.Mkdir(task.File, 0700); err != nil {
+		t.Fatal(err)
+	}
+	metadataPath := filepath.Join(task.File, "metadata.json")
+	original := []byte(`{"description":"keep original metadata"}`)
+	if err := os.WriteFile(metadataPath, original, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := task.Download(); err == nil || !strings.Contains(err.Error(), "16 MiB") {
+		t.Fatalf("unreadable file metadata was accepted: %v", err)
+	}
+	after, err := os.ReadFile(metadataPath)
+	if err != nil || !bytes.Equal(original, after) || requests.Load() != 0 {
+		t.Fatalf("rejected metadata changed output or fetched tiles: read=%v requests=%d size=%d", err, requests.Load(), len(after))
+	}
+}
+
+func TestAuditMBTilesDownloadUsesLiteralOutputPath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("question marks are not valid Windows directory names")
+	}
+	dir := configureRegressionOutput(t)
+	root := filepath.Join(dir, "literal?folder")
+	viper.Set("output.directory", root)
+	viper.Set("output.format", "mbtiles")
+	viper.Set("output.name", "tiles")
+	var requests atomic.Int32
+	body := tileDataPNG(t)
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		w.Write(body)
+	}))
+	defer source.Close()
+	for _, resume := range []bool{false, true} {
+		viper.Set("output.resume", resume)
+		task := newRegressionTask(t, source.URL)
+		if err := task.Download(); err != nil {
+			t.Fatal(err)
+		}
+		if info, err := os.Stat(filepath.Join(root, "tiles.mbtiles")); err != nil || !info.Mode().IsRegular() {
+			t.Fatalf("download did not use the literal configured path: %v", err)
+		}
+	}
+	if requests.Load() != 1 {
+		t.Fatalf("resume did not find the original tile: requests=%d", requests.Load())
+	}
+	if _, err := os.Stat(filepath.Join(dir, "literal")); !os.IsNotExist(err) {
+		t.Fatalf("SQLite created a database outside the output directory: %v", err)
 	}
 }
 
