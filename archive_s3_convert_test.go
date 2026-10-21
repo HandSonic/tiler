@@ -200,7 +200,7 @@ func TestS3ConversionLooseRoundTripWithPaginationAndCustomLayouts(t *testing.T) 
 	blue := archiveTestPNG(t, color.RGBA{B: 255, A: 255})
 	store.put("source/region/2/2/1.png", red)
 	store.put("source/region/2/1/2.png", blue)
-	store.put("source/region/metadata.json", []byte(`{"format":"png","tile_path":"{z}/{y}/{x}.{format}","name":"source-region","bounds":[-180,-85,180,85],"center":[0,0,2]}`))
+	store.put("source/region/metadata.json", []byte(`{"format":"png","tile_path":"{z}/{y}/{x}.{format}","name":"source-region","bounds":[-180,-85,180,85],"center":[0,0,2],"custom_flag":true,"custom_id":9007199254740993,"custom_array":[1,false],"custom_obj":{"id":9007199254740993},"custom_null":null,"json":{"custom_flag":false,"retained":"keep"}}`))
 	store.put("source/region/README.txt", []byte("not a tile"))
 	root := t.TempDir()
 	mbtiles := filepath.Join(root, "local.mbtiles")
@@ -233,6 +233,19 @@ func TestS3ConversionLooseRoundTripWithPaginationAndCustomLayouts(t *testing.T) 
 	got, err := os.ReadFile(filepath.Join(files, "2_2_1.png"))
 	if err != nil || !bytes.Equal(got, red) {
 		t.Fatalf("PMTiles->files output mismatch %v", err)
+	}
+	metadata, err = archiveReadDirectoryMetadata(files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var extensions map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(metadata["json"]), &extensions); err != nil {
+		t.Fatal(err)
+	}
+	for key, want := range map[string]string{"custom_flag": "true", "custom_id": "9007199254740993", "custom_array": "[1,false]", "custom_obj": `{"id":9007199254740993}`, "custom_null": "null", "retained": `"keep"`} {
+		if string(extensions[key]) != want {
+			t.Errorf("source JSON extension %s changed type or value: %s", key, extensions[key])
+		}
 	}
 }
 

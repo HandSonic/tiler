@@ -171,19 +171,42 @@ func archiveReadDirectoryMetadata(dir string) (map[string]string, error) {
 	if len(data) > maxMetadataBytes {
 		return nil, fmt.Errorf("metadata.json exceeds 16 MiB")
 	}
-	var values map[string]json.RawMessage
-	if err := json.Unmarshal(data, &values); err != nil {
+	metadata, err = archiveDecodeJSONMetadata(data)
+	if err != nil {
 		return nil, fmt.Errorf("read metadata.json: %w", err)
 	}
-	if values == nil {
-		return nil, fmt.Errorf("metadata.json must be an object")
+	return metadata, nil
+}
+
+func archiveDecodeJSONMetadata(data []byte) (map[string]string, error) {
+	var values map[string]json.RawMessage
+	if err := json.Unmarshal(data, &values); err != nil || values == nil {
+		return nil, fmt.Errorf("metadata must be a JSON object")
 	}
+	metadata := make(map[string]string, len(values))
+	extensions := make(map[string]json.RawMessage)
 	for key, value := range values {
-		var text string
-		if json.Unmarshal(value, &text) == nil {
-			metadata[key] = text
-		} else {
+		var text *string
+		decodeErr := json.Unmarshal(value, &text)
+		if decodeErr == nil && text != nil {
+			metadata[key] = *text
+		} else if archiveFlatMetadataKey(key) {
 			metadata[key] = string(value)
+			if decodeErr == nil {
+				metadata[key] = ""
+			}
+		} else {
+			extensions[key] = value
+		}
+	}
+	if len(extensions) > 0 {
+		encoded, err := json.Marshal(extensions)
+		if err != nil {
+			return nil, err
+		}
+		metadata["json"], err = mergeArchiveJSON(string(encoded), metadata["json"])
+		if err != nil {
+			return nil, err
 		}
 	}
 	return metadata, nil

@@ -815,7 +815,8 @@ func archiveMergeMetadata(existing, incoming map[string]string) (map[string]stri
 		result[key] = value
 	}
 	for key, value := range incoming {
-		if result[key] == "" {
+		previous, exists := result[key]
+		if !exists || previous == "" && archiveFlatMetadataKey(key) {
 			result[key] = value
 		}
 	}
@@ -860,7 +861,7 @@ func archiveMergeMetadata(existing, incoming map[string]string) (map[string]stri
 		if index == 0 {
 			// Keep old JSON extensions ahead of newly supplied flat values.
 			for key := range object {
-				if !archiveFlatMetadataKey(key) && existing[key] == "" {
+				if _, hasFlat := existing[key]; !archiveFlatMetadataKey(key) && !hasFlat {
 					delete(result, key)
 				}
 			}

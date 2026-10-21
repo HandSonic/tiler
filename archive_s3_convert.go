@@ -364,17 +364,9 @@ func archiveS3Metadata(ctx context.Context, out *s3Output, prefix string) (map[s
 	if err != nil {
 		return nil, false, fmt.Errorf("read S3 tile metadata: %w", err)
 	}
-	var values map[string]json.RawMessage
-	if err := json.Unmarshal(data, &values); err != nil || values == nil {
-		return nil, false, fmt.Errorf("S3 metadata.json must contain a JSON object")
-	}
-	metadata := make(map[string]string, len(values))
-	for key, value := range values {
-		var text string
-		if json.Unmarshal(value, &text) != nil {
-			text = string(value)
-		}
-		metadata[key] = text
+	metadata, err := archiveDecodeJSONMetadata(data)
+	if err != nil {
+		return nil, false, fmt.Errorf("read S3 tile metadata: %w", err)
 	}
 	return metadata, true, nil
 }

@@ -19,14 +19,18 @@ import (
 )
 
 func TestCLIConvertWritesRequestedFormat(t *testing.T) {
+	viper.Reset()
+	t.Cleanup(viper.Reset)
 	input := filepath.Join(t.TempDir(), "xyz")
 	archiveTestWrite(t, filepath.Join(input, "0", "0", "0.png"), archiveTestPNG(t, color.RGBA{G: 255, A: 255}))
 	archiveTestWrite(t, filepath.Join(input, "metadata.json"), []byte(`{"custom_bool":"old","json":{"source":"keep","custom_bool":true}}`))
 	metadataFile := filepath.Join(t.TempDir(), "metadata.json")
-	archiveTestWrite(t, metadataFile, []byte(`{"name":"metadata-name","custom_label":"label","custom_bool":false,"custom_array":[1,false],"custom_obj":{"id":9007199254740993},"custom_id":9007199254740993,"custom_null":null}`))
+	archiveTestWrite(t, metadataFile, []byte(`{"name":"metadata-name","custom_label":"label","custom_bool":false,"custom_array":[1,false],"custom_obj":{"id":9007199254740993},"custom_id":9007199254740993,"custom_null":null,"json":{"from_file":true}}`))
+	configFile := filepath.Join(t.TempDir(), "convert.toml")
+	archiveTestWrite(t, configFile, []byte("[tm]\njson = '{\"configured\":true,\"custom_bool\":true}'\n"))
 	output := filepath.Join(t.TempDir(), "converted.mbtiles")
 	var stdout, stderr bytes.Buffer
-	if err := runCLI([]string{"convert", "-input", input, "-output", output, "-format", "jpg", "-name", "cli-conversion", "-metadata", metadataFile}, &stdout, &stderr); err != nil {
+	if err := runCLI([]string{"convert", "-c", configFile, "-input", input, "-output", output, "-format", "jpg", "-name", "cli-conversion", "-metadata", metadataFile}, &stdout, &stderr); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(stdout.String(), "Converted 1 jpg tiles") {
@@ -56,7 +60,7 @@ func TestCLIConvertWritesRequestedFormat(t *testing.T) {
 	if err := json.Unmarshal([]byte(metadataJSON), &actual); err != nil {
 		t.Fatal(err)
 	}
-	for key, want := range map[string]string{"source": `"keep"`, "custom_bool": "false", "custom_array": "[1,false]", "custom_obj": `{"id":9007199254740993}`, "custom_id": "9007199254740993", "custom_null": "null"} {
+	for key, want := range map[string]string{"source": `"keep"`, "custom_bool": "false", "custom_array": "[1,false]", "custom_obj": `{"id":9007199254740993}`, "custom_id": "9007199254740993", "custom_null": "null", "configured": "true", "from_file": "true"} {
 		if string(actual[key]) != want {
 			t.Errorf("metadata %s changed value or JSON type: got %s, want %s", key, actual[key], want)
 		}

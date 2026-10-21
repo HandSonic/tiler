@@ -242,15 +242,40 @@ func TestDownloadMetadataResumeDoesNotRoundCoverageInward(t *testing.T) {
 func TestDownloadFileResumeRejectsChangedLayoutAndAcceptsLegacyXYZ(t *testing.T) {
 	task := fileMetadataTask(t.TempDir())
 	task.resume = true
-	if err := os.WriteFile(filepath.Join(task.File, "metadata.json"), []byte(`{"format":"png","bounds":[-90,-45,90,45],"minzoom":1,"maxzoom":10}`), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(task.File, "metadata.json"), []byte(`{"format":"png","bounds":[-90,-45,90,45],"center":[0,0,4],"minzoom":1,"maxzoom":10,"custom_bool":true,"custom_array":[1,false],"custom_obj":{"id":9007199254740993},"custom_id":9007199254740993,"custom_null":null,"custom_empty":"","Bounds":[1,2,3,4]}`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if err := task.validateFileResumeMetadata(); err != nil {
 		t.Fatalf("legacy XYZ metadata rejected: %v", err)
 	}
+	if err := task.saveFileMetadata(); err != nil {
+		t.Fatal(err)
+	}
 	before, err := os.ReadFile(filepath.Join(task.File, "metadata.json"))
 	if err != nil {
 		t.Fatal(err)
+	}
+	var metadata map[string]string
+	if err := json.Unmarshal(before, &metadata); err != nil {
+		t.Fatal(err)
+	}
+	var extensions map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(metadata["json"]), &extensions); err != nil {
+		t.Fatalf("resume lost typed TileJSON metadata: %v", err)
+	}
+	for key, want := range map[string]string{"custom_bool": "true", "custom_array": "[1,false]", "custom_obj": `{"id":9007199254740993}`, "custom_id": "9007199254740993", "custom_null": "null", "Bounds": "[1,2,3,4]"} {
+		if string(extensions[key]) != want {
+			t.Errorf("resume changed %s: got %s, want %s", key, extensions[key], want)
+		}
+		if _, exists := metadata[key]; exists {
+			t.Errorf("resume flattened typed metadata %s", key)
+		}
+	}
+	if value, exists := metadata["custom_empty"]; !exists || value != "" {
+		t.Error("resume dropped the existing empty extension")
+	}
+	if metadata["bounds"] != "-90.000000,-45.000000,90.000000,60.000000" || metadata["center"] != "0.000000,7.500000,5" {
+		t.Fatalf("legacy coordinate arrays changed during resume: %v", metadata)
 	}
 	task.tilePath = "{z}/{y}/{x}.{format}"
 	if err := task.validateFileResumeMetadata(); err == nil || !strings.Contains(err.Error(), "tile_path") {

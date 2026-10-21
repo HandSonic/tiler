@@ -30,36 +30,29 @@ func readDownloadFileMetadata(filename string) (map[string]string, error) {
 	if len(body) > maxMetadataBytes {
 		return nil, fmt.Errorf("existing metadata.json exceeds 16 MiB")
 	}
-	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(body, &raw); err != nil {
+	metadata, err := archiveDecodeJSONMetadata(body)
+	if err != nil {
 		return nil, fmt.Errorf("read existing metadata.json: %w", err)
 	}
-	if raw == nil {
-		return nil, fmt.Errorf("existing metadata.json must be an object")
+	var coordinates map[string]json.RawMessage
+	if err := json.Unmarshal(body, &coordinates); err != nil {
+		return nil, err
 	}
-	metadata := make(map[string]string, len(raw))
-	for key, value := range raw {
-		if (key == "bounds" || key == "center") && strings.TrimSpace(string(value)) == "null" {
+	for _, key := range []string{"bounds", "center"} {
+		value := coordinates[key]
+		if strings.TrimSpace(string(value)) == "null" {
 			return nil, fmt.Errorf("existing metadata %s cannot be null", key)
 		}
-		var text string
-		if json.Unmarshal(value, &text) == nil {
-			metadata[key] = text
-		} else {
-			metadata[key] = string(value)
-			if key == "bounds" || key == "center" {
-				var numbers []*float64
-				if json.Unmarshal(value, &numbers) == nil && len(numbers) > 0 {
-					parts := make([]string, len(numbers))
-					for i, number := range numbers {
-						if number == nil {
-							return nil, fmt.Errorf("existing metadata %s coordinates cannot be null", key)
-						}
-						parts[i] = strconv.FormatFloat(*number, 'g', -1, 64)
-					}
-					metadata[key] = strings.Join(parts, ",")
+		var numbers []*float64
+		if json.Unmarshal(value, &numbers) == nil && len(numbers) > 0 {
+			parts := make([]string, len(numbers))
+			for i, number := range numbers {
+				if number == nil {
+					return nil, fmt.Errorf("existing metadata %s coordinates cannot be null", key)
 				}
+				parts[i] = strconv.FormatFloat(*number, 'g', -1, 64)
 			}
+			metadata[key] = strings.Join(parts, ",")
 		}
 	}
 	return metadata, nil
@@ -199,7 +192,7 @@ func mergeDownloadMetadata(existing, incoming map[string]string, fileOutput bool
 			}
 		}
 		for name, value := range existing {
-			if value != "" {
+			if value != "" || !archiveFlatMetadataKey(name) {
 				result[name] = value
 			}
 		}

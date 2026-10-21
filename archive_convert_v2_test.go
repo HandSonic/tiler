@@ -124,8 +124,8 @@ func TestArchiveV2PMMetadataTypesSurviveIntermediateFormats(t *testing.T) {
 	ctx := context.Background()
 	input := t.TempDir()
 	archiveTestWrite(t, filepath.Join(input, "0", "0", "0.png"), tileDataPNG(t))
-	custom := `{"custom_bool":true,"custom_array":[1,false],"custom_obj":{"id":9007199254740993},"custom_number":9007199254740993,"custom_label":"original","json":{"nested":true}}`
-	archiveTestWrite(t, filepath.Join(input, "metadata.json"), []byte(`{"json":`+custom+`}`))
+	custom := `{"custom_bool":true,"custom_array":[1,false],"custom_obj":{"id":9007199254740993},"custom_number":9007199254740993,"custom_null":null,"custom_label":"original","json":{"nested":true}}`
+	archiveTestWrite(t, filepath.Join(input, "metadata.json"), []byte(`{"custom_bool":true,"custom_array":[1,false],"custom_obj":{"id":9007199254740993},"custom_number":9007199254740993,"custom_null":null,"json":{"custom_bool":false,"custom_label":"original","json":{"nested":true}}}`))
 	source := filepath.Join(t.TempDir(), "source.pmtiles")
 	if _, err := ConvertArchive(ctx, input, source, ArchiveConvertOptions{}); err != nil {
 		t.Fatal(err)
@@ -181,10 +181,10 @@ func TestArchiveV2AppendPreservesRegionAndUnionsMetadata(t *testing.T) {
 	regionA := t.TempDir()
 	regionB := t.TempDir()
 	archiveTestWrite(t, filepath.Join(regionA, "1", "0", "0.png"), red)
-	archiveTestWrite(t, filepath.Join(regionA, "metadata.json"), []byte(`{"name":"all-regions","bounds":"-170,5,-10,80","flat_custom":"old","json":{"bounds":[-170,5,-10,80],"center":[-90,45,1],"minzoom":1,"maxzoom":1,"custom":"keep","custom_id":9007199254740993,"nested":{"id":9007199254740993}}}`))
+	archiveTestWrite(t, filepath.Join(regionA, "metadata.json"), []byte(`{"name":"all-regions","bounds":"-170,5,-10,80","flat_custom":"old","empty_custom":"","json":{"empty_custom":"old nested value","bounds":[-170,5,-10,80],"center":[-90,45,1],"minzoom":1,"maxzoom":1,"custom":"keep","custom_id":9007199254740993,"nested":{"id":9007199254740993}}}`))
 	archiveTestWrite(t, filepath.Join(regionB, "1", "0", "0.png"), green)
 	archiveTestWrite(t, filepath.Join(regionB, "2", "3", "3.png"), blue)
-	archiveTestWrite(t, filepath.Join(regionB, "metadata.json"), []byte(`{"name":"region-b","bounds":"100,-80,170,-5","custom":"flat replacement","json":{"custom":"replace attempt","flat_custom":false,"new_flag":true,"new_nested":{"id":9007199254740993}}}`))
+	archiveTestWrite(t, filepath.Join(regionB, "metadata.json"), []byte(`{"name":"region-b","bounds":"100,-80,170,-5","custom":"flat replacement","empty_custom":"replacement","json":{"custom":"replace attempt","flat_custom":false,"new_flag":true,"new_nested":{"id":9007199254740993}}}`))
 	for _, kind := range []string{"mbtiles", "pmtiles", "file"} {
 		t.Run(kind, func(t *testing.T) {
 			output := filepath.Join(t.TempDir(), "combined."+kind)
@@ -247,6 +247,13 @@ func TestArchiveV2AppendPreservesRegionAndUnionsMetadata(t *testing.T) {
 			}
 			if metadata["flat_custom"] != "old" && string(raw["flat_custom"]) != `"old"` {
 				t.Errorf("incoming JSON overrode an existing flat value: %v", metadata)
+			}
+			if kind == "pmtiles" {
+				if string(raw["empty_custom"]) != `""` {
+					t.Errorf("append replaced an existing empty extension: %s", raw["empty_custom"])
+				}
+			} else if value, exists := metadata["empty_custom"]; !exists || value != "" {
+				t.Errorf("append replaced an existing empty flat extension: exists=%v value=%q", exists, value)
 			}
 			if string(raw["new_flag"]) != "true" || string(raw["new_nested"]) != `{"id":9007199254740993}` {
 				t.Errorf("new region's nonconflicting JSON fields were lost: %s", metadata["json"])
