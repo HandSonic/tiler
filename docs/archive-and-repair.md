@@ -31,7 +31,7 @@
 ./tiler convert -h
 ```
 
-Windows PowerShell 可直接使用示例中的单引号模板；将 `./tiler` 换为 `.\tiler.exe`。纯本地转换默认不读 TOML；涉及 S3 时用 `-c conf.toml` 提供 endpoint、region 和 AWS 默认凭证链配置，未传 `-c` 时默认读取 `conf.toml`。URI 中的 bucket 和路径优先于配置中的 bucket/prefix。S3 散瓦片前缀请以 `/` 结尾，以免与归档对象混淆。读取 S3 散瓦片需要列举该前缀及读取对象的权限。导出 S3 散瓦片也会读取元数据、列举现有对象、HEAD 检查 key，再写入瓦片，需相应的 `s3:ListBucket`、`s3:GetObject`、`s3:PutObject` 权限。S3 归档追加还需读取原归档；分段失败清理需 `s3:AbortMultipartUpload`。
+Windows PowerShell 可直接使用示例中的单引号模板；将 `./tiler` 换为 `.\tiler.exe`。纯本地转换默认不读 TOML；涉及 S3 时用 `-c conf.toml` 提供 endpoint、region 和凭证配置，未传 `-c` 时默认读取 `conf.toml`。URI 中的 bucket 和路径优先于配置中的 bucket/prefix。S3 散瓦片前缀请以 `/` 结尾，以免与归档对象混淆。读取 S3 散瓦片需要列举该前缀及读取对象的权限。导出 S3 散瓦片也会读取元数据、列举现有对象、HEAD 检查 key，再写入瓦片，需相应的 `s3:ListBucket`、`s3:GetObject`、`s3:PutObject` 权限。S3 归档追加还需读取原归档；分段失败清理需 `s3:AbortMultipartUpload`。
 
 | 参数 | 用途 |
 | --- | --- |
@@ -143,11 +143,14 @@ bucket = "my-map-tiles"
 prefix = "archives"
 region = "us-east-1"
 endpoint = "http://localhost:9000"
+access_key_id = "YOUR_ACCESS_KEY_ID"
+secret_access_key = "YOUR_SECRET_ACCESS_KEY"
+session_token = ""
 force_path_style = true
 timeout_seconds = 60
 ```
 
-使用 AWS 默认凭证链提供密钥，例如 `AWS_ACCESS_KEY_ID`、`AWS_SECRET_ACCESS_KEY`、可选 `AWS_SESSION_TOKEN` 或 `AWS_PROFILE`。AWS S3 的 `endpoint` 留空，通常使用 `force_path_style = false`。目标 bucket 必须已存在；上传需要目标对象的 `s3:PutObject` 权限，中止失败分段上传还需 `s3:AbortMultipartUpload`。
+上例可直接明文填写密钥；临时凭证需填写 `session_token`。这组配置优先于 AWS 默认凭证链，不会混用环境变量中的 token。三个凭证字段都留空时使用默认链，例如 `AWS_ACCESS_KEY_ID`、`AWS_SECRET_ACCESS_KEY`、可选 `AWS_SESSION_TOKEN` 或 `AWS_PROFILE`；不允许只填部分密钥。直存、上传和转换均使用同一凭证入口。AWS S3 的 `endpoint` 留空，通常使用 `force_path_style = false`。目标 bucket 必须已存在；上传需要目标对象的 `s3:PutObject` 权限，中止失败分段上传还需 `s3:AbortMultipartUpload`。
 
 ```sh
 ./tiler upload -c conf.toml basemap.mbtiles basemap.pmtiles

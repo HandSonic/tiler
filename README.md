@@ -51,11 +51,14 @@ bucket = "my-map-tiles"
 prefix = "basemap"
 region = "ap-northeast-1"
 endpoint = ""
+access_key_id = ""
+secret_access_key = ""
+session_token = ""
 force_path_style = false
 timeout_seconds = 60
 ```
 
-Bucket 需预先存在，运行身份需有目标对象的 `s3:PutObject` 权限。凭证使用 AWS 默认凭证链：环境变量 `AWS_ACCESS_KEY_ID`、`AWS_SECRET_ACCESS_KEY`、可选的 `AWS_SESSION_TOKEN`，共享配置/`AWS_PROFILE`，或 IAM 角色。无需将密钥写入 TOML；`region` 留空时使用 `AWS_REGION`、`AWS_DEFAULT_REGION` 或 AWS profile。
+Bucket 需预先存在，运行身份需有目标对象的 `s3:PutObject` 权限。可在 `[output.s3]` 中明文填写 `access_key_id` 和 `secret_access_key`，临时凭证还需 `session_token`。配置中的凭证优先于环境变量、profile 和 IAM 角色，未填写的 token 不会继承环境变量。三个字段都留空时使用 AWS 默认凭证链：环境变量 `AWS_ACCESS_KEY_ID`、`AWS_SECRET_ACCESS_KEY`、可选的 `AWS_SESSION_TOKEN`，共享配置/`AWS_PROFILE`，或 IAM 角色。只填写一项密钥或只填写 token 会报配置错误。直存、`upload` 和涉及 S3 的 `convert` 共用这些设置；`region` 留空时使用 `AWS_REGION`、`AWS_DEFAULT_REGION` 或 AWS profile。
 
 对象键为 `prefix` 加 `output.tile_path`，默认得到 `basemap/{z}/{x}/{y}.{format}`；例如将模板改为 `{z}/{y}/{x}.{format}` 即可交换目录顺序。空 prefix 直接从模板开始。S3 模式不创建本地瓦片副本；`output.directory` 只用于默认失败清单位置，`output.name` 不影响对象键。`resume = false` 时同 key 会被覆盖；开启恢复时通过 HEAD 跳过非空对象，另需 `s3:GetObject` 权限；AWS S3 还需 `s3:ListBucket` 才能将缺失对象识别为 404（否则可能返回 403 并停止恢复，参见 [HeadObject 权限说明](https://docs.aws.amazon.com/AmazonS3/latest/API/API_HeadObject.html)）。
 

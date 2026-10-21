@@ -13,6 +13,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/smithy-go"
 	"github.com/paulmach/orb/maptile"
@@ -61,6 +62,15 @@ func newS3OutputForBucket(ctx context.Context, bucket string) (*s3Output, error)
 	opts := []func(*config.LoadOptions) error{}
 	if region := strings.TrimSpace(viper.GetString("output.s3.region")); region != "" {
 		opts = append(opts, config.WithRegion(region))
+	}
+	accessKey := viper.GetString("output.s3.access_key_id")
+	secretKey := viper.GetString("output.s3.secret_access_key")
+	sessionToken := viper.GetString("output.s3.session_token")
+	if accessKey != "" || secretKey != "" || sessionToken != "" {
+		if strings.TrimSpace(accessKey) == "" || strings.TrimSpace(secretKey) == "" {
+			return nil, fmt.Errorf("output.s3.access_key_id and output.s3.secret_access_key must both be provided when configuring credentials")
+		}
+		opts = append(opts, config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(accessKey, secretKey, sessionToken)))
 	}
 	cfg, err := config.LoadDefaultConfig(ctx, opts...)
 	if err != nil {

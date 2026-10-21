@@ -66,10 +66,22 @@ func TestS3Save(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			configureS3Test(t)
+			wantAccessKey, wantToken := "test-access-key", ""
+			if tt.name == "png" || tt.name == "jpg" {
+				t.Setenv("AWS_SESSION_TOKEN", "environment-token")
+				wantAccessKey = "configured-access-key"
+				if tt.name == "jpg" {
+					wantToken = "configured-session-token"
+				}
+				viper.SetConfigType("toml")
+				if err := viper.ReadConfig(strings.NewReader("[output.s3]\naccess_key_id = \"configured-access-key\"\nsecret_access_key = \"configured-secret-key\"\nsession_token = \"" + wantToken + "\"\n")); err != nil {
+					t.Fatal(err)
+				}
+			}
 			type requestData struct {
-				method, path, contentType, encoding, authorization string
-				body                                               []byte
-				err                                                error
+				method, path, contentType, encoding, authorization, token string
+				body                                                      []byte
+				err                                                       error
 			}
 			requests := make(chan requestData, 1)
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -77,7 +89,7 @@ func TestS3Save(t *testing.T) {
 				requests <- requestData{
 					method: r.Method, path: r.URL.Path,
 					contentType: r.Header.Get("Content-Type"), encoding: r.Header.Get("Content-Encoding"),
-					authorization: r.Header.Get("Authorization"), body: body, err: err,
+					authorization: r.Header.Get("Authorization"), token: r.Header.Get("X-Amz-Security-Token"), body: body, err: err,
 				}
 				w.Header().Set("ETag", `"test-etag"`)
 				w.WriteHeader(http.StatusOK)
@@ -109,8 +121,11 @@ func TestS3Save(t *testing.T) {
 				if !bytes.Equal(got.body, tt.body) {
 					t.Errorf("uploaded body differs from the original tile")
 				}
-				if !strings.HasPrefix(got.authorization, "AWS4-HMAC-SHA256 Credential=test-access-key/") {
+				if !strings.HasPrefix(got.authorization, "AWS4-HMAC-SHA256 Credential="+wantAccessKey+"/") {
 					t.Error("request is missing the expected SigV4 authorization")
+				}
+				if got.token != wantToken {
+					t.Error("request used an unexpected session token")
 				}
 			default:
 				t.Fatal("save completed without sending an S3 request")
@@ -159,6 +174,9 @@ func TestNewS3OutputConfiguration(t *testing.T) {
 		{"endpoint without host", func(t *testing.T) { viper.Set("output.s3.endpoint", "https://") }, true, 0},
 		{"zero timeout", func(t *testing.T) { viper.Set("output.s3.timeout_seconds", 0) }, true, 0},
 		{"negative timeout", func(t *testing.T) { viper.Set("output.s3.timeout_seconds", -1) }, true, 0},
+		{"access key without secret", func(t *testing.T) { viper.Set("output.s3.access_key_id", "configured-access-key") }, true, 0},
+		{"secret without access key", func(t *testing.T) { viper.Set("output.s3.secret_access_key", "configured-secret-key") }, true, 0},
+		{"session token without key pair", func(t *testing.T) { viper.Set("output.s3.session_token", "configured-session-token") }, true, 0},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -170,6 +188,11 @@ func TestNewS3OutputConfiguration(t *testing.T) {
 			if tt.wantErr {
 				if err == nil {
 					t.Fatal("expected invalid configuration to fail")
+				}
+				for _, key := range []string{"access_key_id", "secret_access_key", "session_token"} {
+					if value := viper.GetString("output.s3." + key); value != "" && strings.Contains(err.Error(), value) {
+						t.Error("configuration error exposed a credential value")
+					}
 				}
 				return
 			}

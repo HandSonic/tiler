@@ -21,7 +21,7 @@
 	#optional JSON failure manifest path; repair reuses the original output target
 	#failure_file = "output/failures.json"
 [output.s3]
-	#used for direct S3 output and the upload command; bucket must already exist
+	#used for direct S3 output, upload and convert; bucket must already exist
 	bucket = ""
 	#direct tile key: prefix + output.tile_path; convert URIs specify their own path
 	prefix = "tiles"
@@ -29,11 +29,16 @@
 	region = ""
 	#optional S3-compatible endpoint, e.g. http://localhost:9000 for MinIO
 	endpoint = ""
+	#optional plaintext credentials; set both to override the AWS default chain
+	#leave all three empty to use environment variables, AWS profiles, or IAM roles
+	access_key_id = ""
+	secret_access_key = ""
+	#only needed with temporary credentials; otherwise leave empty
+	session_token = ""
 	#MinIO generally needs true; AWS S3 can use false
 	force_path_style = false
 	#positive timeout per direct tile upload; archive upload uses CLI -timeout
 	timeout_seconds = 60
-	#credentials come from the AWS SDK default chain, not this file
 [task]
 	#number of fetchers
 	workers = 3

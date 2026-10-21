@@ -51,11 +51,14 @@ bucket = "my-map-tiles"
 prefix = "basemap"
 region = "ap-northeast-1"
 endpoint = ""
+access_key_id = ""
+secret_access_key = ""
+session_token = ""
 force_path_style = false
 timeout_seconds = 60
 ```
 
-Create the bucket beforehand and grant `s3:PutObject` on the target objects. Credentials use the AWS default chain: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, optional `AWS_SESSION_TOKEN`, shared configuration/`AWS_PROFILE`, or an IAM role. Keep credentials out of TOML. An empty `region` uses `AWS_REGION`, `AWS_DEFAULT_REGION`, or the AWS profile.
+Create the bucket beforehand and grant `s3:PutObject` on the target objects. Plaintext `access_key_id` and `secret_access_key` may be set under `[output.s3]`, with `session_token` for temporary credentials. Configured credentials take precedence over environment variables, profiles, and IAM roles; an empty configured token does not inherit the environment token. Leave all three fields empty to use the AWS default chain: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, optional `AWS_SESSION_TOKEN`, shared configuration/`AWS_PROFILE`, or an IAM role. A partial key pair or a token without keys is a configuration error. Direct output, `upload`, and S3 `convert` share these settings. An empty `region` uses `AWS_REGION`, `AWS_DEFAULT_REGION`, or the AWS profile.
 
 Keys combine `prefix` with `output.tile_path`, producing `basemap/{z}/{x}/{y}.{format}` by default. For example, `{z}/{y}/{x}.{format}` swaps the directory order. An empty prefix starts directly with the template. S3 writes no local tile copy; `output.directory` provides the default local failure-manifest directory, and `output.name` does not affect object keys. With `resume = false`, existing keys are overwritten; resume uses HEAD to skip nonempty objects and additionally requires `s3:GetObject`. AWS S3 also needs `s3:ListBucket` to distinguish missing objects (404) from access denial (403); see [HeadObject permissions](https://docs.aws.amazon.com/AmazonS3/latest/API/API_HeadObject.html).
 
