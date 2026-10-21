@@ -22,8 +22,9 @@ def package(repo, dist, arch):
         raise ValueError("Executable architecture does not match " + arch)
 
     files = [(exe, "tiler.exe")]
-    for name in ("conf.toml", "README.md", "docs/issue-status.md"):
+    for name in ("conf.toml", "README.md", "README-EN.md"):
         files.append((repo / name, name))
+    files.extend((file, file.relative_to(repo).as_posix()) for file in sorted((repo / "docs").rglob("*")) if file.is_file())
     files.append((repo / "internal/cover/LICENSE.md", "licenses/orb-tilecover-LICENSE.md"))
     geojson_files = sorted((repo / "geojson").rglob("*.geojson"))
     if not geojson_files:
