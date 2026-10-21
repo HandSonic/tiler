@@ -5,6 +5,8 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
+	"strings"
 	"time"
 
 	"github.com/shiena/ansicolor"
@@ -17,11 +19,13 @@ import (
 
 // flag
 var (
-	hf bool
-	cf string
+	hf          bool
+	cf          string
+	interactive bool
 )
 
 func init() {
+	flag.BoolVar(&interactive, "i", false, "interactive controls: p/r/q then Enter")
 	flag.BoolVar(&hf, "h", false, "this help")
 	flag.StringVar(&cf, "c", "conf.toml", "set config `file`")
 	// 改变默认的 Usage，flag包中的Usage 其实是一个函数类型。这里是覆盖默认函数实现，具体见后面Usage部分的分析
@@ -45,16 +49,17 @@ Usage: tiler [-h] [-c filename]
 }
 
 // initConf 初始化配置
-func initConf(cfgFile string) {
+func initConf(cfgFile string) error {
 	if _, err := os.Stat(cfgFile); os.IsNotExist(err) {
-		log.Warnf("config file(%s) not exist", cfgFile)
+		return fmt.Errorf("config file %s does not exist", cfgFile)
 	}
 	viper.SetConfigType("toml")
 	viper.SetConfigFile(cfgFile)
+	viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	viper.AutomaticEnv() // read in environment variables that match
 	err := viper.ReadInConfig()
 	if err != nil {
-		log.Warnf("read config file(%s) error, details: %s", viper.ConfigFileUsed(), err)
+		return fmt.Errorf("read config file %s: %w", cfgFile, err)
 	}
 	viper.SetDefault("app.version", "v 0.1.0")
 	viper.SetDefault("app.title", "MapCloud Tiler")
@@ -63,6 +68,9 @@ func initConf(cfgFile string) {
 	viper.SetDefault("task.workers", 4)
 	viper.SetDefault("task.savepipe", 1)
 	viper.SetDefault("task.timedelay", 0)
+	viper.SetDefault("task.timeout_seconds", 30)
+	viper.SetDefault("task.retries", 3)
+	return nil
 }
 
 type TileData struct {
@@ -174,7 +182,9 @@ func main() {
 	if cf == "" {
 		cf = "conf.toml"
 	}
-	initConf(cf)
+	if err := initConf(cf); err != nil {
+		log.Fatal(err)
+	}
 	start := time.Now()
 	tm := TileMap{
 		Name:   viper.GetString("tm.name"),
@@ -198,6 +208,9 @@ func main() {
 	}
 	var layers []Layer
 	for _, lrs := range cfgLrs {
+		if lrs.Min < 0 || lrs.Max > 30 || lrs.Min > lrs.Max {
+			log.Fatal("lrs min/max must satisfy 0 <= min <= max <= 30")
+		}
 		for z := lrs.Min; z <= lrs.Max; z++ {
 			c := loadCollection(lrs.Geojson)
 			layer := Layer{
@@ -209,8 +222,28 @@ func main() {
 		}
 	}
 	task := NewTask(layers, tm)
-	fmt.Println(task.workerCount)
-	task.Download()
+	if task == nil {
+		log.Fatal("no download layers configured")
+	}
+	interrupts := make(chan os.Signal, 1)
+	signal.Notify(interrupts, os.Interrupt)
+	defer signal.Stop(interrupts)
+	finished := make(chan struct{})
+	defer close(finished)
+	go func() {
+		select {
+		case <-interrupts:
+			task.Cancel()
+		case <-finished:
+		}
+	}()
+	if interactive {
+		fmt.Println("Controls: p + Enter = pause, r + Enter = resume, q + Enter = stop")
+		go task.readControls(os.Stdin, os.Stdout)
+	}
+	if err := task.Download(); err != nil {
+		log.Fatal(err)
+	}
 	secs := time.Since(start).Seconds()
 	log.Printf("\n%.3fs finished...", secs)
 }

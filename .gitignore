@@ -1,0 +1,7 @@
+/dist/
+/output/
+/tiler
+/tiler.exe
+*.test
+__pycache__/
+*.pyc

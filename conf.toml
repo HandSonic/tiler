@@ -2,10 +2,30 @@
 	version = "v 0.1.0"
 	title = "MapCloud Tiler"
 [output]
-	#can be mbtiles/file
+	#can be mbtiles/file/s3
 	format ="file"
-	#the output dir
+	#the output dir for file/mbtiles (unused for s3)
 	directory ="output"
+	#skip existing nonempty tiles; keep the same source and output settings
+	resume = false
+	#optional fixed file/mbtiles basename; resume defaults to Name-zmin-max
+	name = ""
+	#optional PBF gzip override: file defaults false; mbtiles/s3 default true
+	#gzip_pbf = true
+[output.s3]
+	#used only when output.format = "s3"; bucket must already exist
+	bucket = ""
+	#object key: prefix/z/x/y.ext; empty prefix gives z/x/y.ext
+	prefix = "tiles"
+	#leave empty to use AWS_REGION, AWS_DEFAULT_REGION, or the AWS profile
+	region = ""
+	#optional S3-compatible endpoint, e.g. http://localhost:9000 for MinIO
+	endpoint = ""
+	#MinIO generally needs true; AWS S3 can use false
+	force_path_style = false
+	#positive timeout for each upload, including SDK retries
+	timeout_seconds = 60
+	#credentials come from the AWS SDK default chain, not this file
 [task]
 	#number of fetchers
 	workers = 3
@@ -13,16 +33,23 @@
 	savepipe = 1
 	#min request interval, a speed limit, unit millisecond
 	timedelay = 50
+	#download request timeout in seconds; must be positive
+	timeout_seconds = 30
+	#additional attempts for network errors and HTTP 408/429/5xx
+	retries = 3
+	#optional source-specific request headers
+	#user_agent = "Tiler"
+	#referer = "https://map.tianditu.gov.cn/"
 
 [tm]
 	#name for mbtiles
 	name = "google satelite"
-	#max and min level for mbtiles
+	#metadata zoom bounds are derived from the actual [[lrs]] layers
 	min = 0
 	max = 11
-	#can be pbf/png/jpg
+	#pbf/png/jpg; png/jpg convert the actual image encoding
 	format = "jpg"
-	#can be xyz/tm
+	#can be xyz/tms (Web Mercator only)
 	schema = "xyz"
 	#the vector tiles metadata tilejson
 	# json = ""

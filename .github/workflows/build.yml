@@ -1,0 +1,51 @@
+name: Test and build Windows 7 targets
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-and-cross-build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          # Go 1.21+ no longer supports Windows 7.
+          go-version: '1.20.14'
+          check-latest: false
+      - name: Verify dependencies and test
+        run: |
+          go mod verify
+          go test ./...
+          go vet ./...
+      - name: Install the MSVCRT cross compiler
+        shell: bash
+        run: |
+          curl --fail --location --retry 3 \
+            https://github.com/mstorsjo/llvm-mingw/releases/download/20241217/llvm-mingw-20241217-msvcrt-ubuntu-20.04-x86_64.tar.xz \
+            --output "$RUNNER_TEMP/llvm-mingw.tar.xz"
+          echo "eb878636e95c358452e4f4c95f032d81360096d0f1cd8ab6d24d5d09ca481372  $RUNNER_TEMP/llvm-mingw.tar.xz" | sha256sum --check
+          tar -xJf "$RUNNER_TEMP/llvm-mingw.tar.xz" -C "$RUNNER_TEMP"
+          echo "MINGW_ROOT=$RUNNER_TEMP/llvm-mingw-20241217-msvcrt-ubuntu-20.04-x86_64" >> "$GITHUB_ENV"
+      - name: Build Windows amd64 and 386 with SQLite
+        run: bash scripts/build-windows.sh
+      - name: Record executable compatibility metadata
+        shell: bash
+        run: |
+          export LD_LIBRARY_PATH="$MINGW_ROOT/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          for exe in dist/*.exe; do
+            go version -m "$exe" > "$exe.build.txt"
+            "$MINGW_ROOT/bin/llvm-readobj" --file-headers --coff-imports "$exe" > "$exe.pe.txt"
+          done
+      - name: Package ready-to-run Windows archives
+        run: python3 scripts/package-windows.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tiler-windows-go1.20.14
+          path: dist/*.zip
+          if-no-files-found: error
