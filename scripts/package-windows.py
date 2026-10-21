@@ -27,6 +27,8 @@ def package(repo, dist, arch):
     files.extend((file, file.relative_to(repo).as_posix()) for file in sorted((repo / "docs").rglob("*")) if file.is_file())
     files.append((repo / "internal/cover/LICENSE.md", "licenses/orb-tilecover-LICENSE.md"))
     files.append((repo / "internal/pmtiles/LICENSE", "licenses/pmtiles-LICENSE"))
+    for name in ("golang-x-image-LICENSE", "golang-x-text-LICENSE"):
+        files.append((repo / "third_party/licenses" / name, "licenses/" + name))
     geojson_files = sorted((repo / "geojson").rglob("*.geojson"))
     if not geojson_files:
         raise FileNotFoundError("No bundled GeoJSON files found")

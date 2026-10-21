@@ -69,22 +69,22 @@ func GeometryCount(g orb.Geometry, z maptile.Zoom) int64 {
 
 func Point(ll orb.Point, z maptile.Zoom) maptile.Set {
 	return maptile.Set{
-		maptile.At(ll, z): true,
+		gridAt(ll, z): true,
 	}
 }
 
 func MultiPoint(mp orb.MultiPoint, z maptile.Zoom) maptile.Set {
 	set := make(maptile.Set)
 	for _, p := range mp {
-		set[maptile.At(p, z)] = true
+		set[gridAt(p, z)] = true
 	}
 
 	return set
 }
 
 func Bound(b orb.Bound, z maptile.Zoom) maptile.Set {
-	lo := maptile.At(b.Min, z)
-	hi := maptile.At(b.Max, z)
+	lo := gridAt(b.Min, z)
+	hi := gridAt(b.Max, z)
 
 	result := make(maptile.Set, (hi.X-lo.X+1)*(lo.Y-hi.Y+1))
 
@@ -98,8 +98,8 @@ func Bound(b orb.Bound, z maptile.Zoom) maptile.Set {
 }
 
 func BoundCount(b orb.Bound, z maptile.Zoom) int64 {
-	lo := maptile.At(b.Min, z)
-	hi := maptile.At(b.Max, z)
+	lo := gridAt(b.Min, z)
+	hi := gridAt(b.Max, z)
 
 	cnt := int64(hi.X-lo.X+1) * int64(lo.Y-hi.Y+1)
 

@@ -59,7 +59,10 @@ func ConvertArchive(ctx context.Context, input, output string, opts ArchiveConve
 		return zero, err
 	}
 	if destinationRemote && opts.OutputKind != "" {
-		destination.kind = opts.OutputKind
+		destination.kind, err = archiveOutputKind(destination.key, opts.OutputKind)
+		if err != nil {
+			return zero, err
+		}
 	}
 	if !sourceRemote && !destinationRemote {
 		return convertLocalArchive(ctx, input, output, opts)
@@ -80,6 +83,18 @@ func ConvertArchive(ctx context.Context, input, output string, opts ArchiveConve
 		out, err := archiveS3Client(ctx, source.bucket, opts.S3)
 		if err != nil {
 			return zero, err
+		}
+		if source.kind == "file" && source.key != "" && !strings.HasSuffix(source.key, "/") {
+			kind, err := archiveS3DetectArchiveKind(ctx, out, source.key)
+			if err != nil {
+				return zero, err
+			}
+			if kind != "" {
+				source.kind = kind
+				if destinationRemote && source.bucket == destination.bucket && source.key == destination.key && destination.kind != "file" {
+					return zero, fmt.Errorf("input and output refer to the same S3 object")
+				}
+			}
 		}
 		if source.kind == "file" {
 			input = filepath.Join(work, "s3-input.mbtiles")
@@ -177,6 +192,35 @@ func archiveS3Head(ctx context.Context, out *s3Output, key string) (*s3.HeadObje
 	return head, true, nil
 }
 
+// Explicit output kinds allow an archive to have an arbitrary object key. A
+// trailing slash always selects loose tiles; other ambiguous keys are sniffed
+// using a bounded range read so those outputs can be used as inputs again.
+func archiveS3DetectArchiveKind(ctx context.Context, out *s3Output, key string) (string, error) {
+	_, exists, err := archiveS3Head(ctx, out, key)
+	if err != nil || !exists {
+		return "", err
+	}
+	request, cancel := context.WithTimeout(ctx, out.timeout)
+	defer cancel()
+	object, err := out.client.GetObject(request, &s3.GetObjectInput{Bucket: aws.String(out.bucket), Key: aws.String(key), Range: aws.String("bytes=0-15")})
+	if err != nil {
+		return "", fmt.Errorf("inspect S3 archive %q: %w", key, err)
+	}
+	defer object.Body.Close()
+	header, err := io.ReadAll(io.LimitReader(object.Body, 16))
+	if err != nil {
+		return "", fmt.Errorf("inspect S3 archive %q: %w", key, err)
+	}
+	switch {
+	case bytes.HasPrefix(header, []byte("SQLite format 3\x00")):
+		return "mbtiles", nil
+	case bytes.HasPrefix(header, []byte("PMTiles")):
+		return "pmtiles", nil
+	default:
+		return "", nil
+	}
+}
+
 func archiveS3Download(ctx context.Context, out *s3Output, key, filename string) error {
 	request, cancel := context.WithTimeout(ctx, time.Hour)
 	defer cancel()
@@ -215,13 +259,24 @@ func archiveS3ReadObject(ctx context.Context, out *s3Output, key string, limit i
 }
 
 func archiveS3ReadObjectInfo(ctx context.Context, out *s3Output, key string, limit int64) ([]byte, map[string]string, error) {
+	return archiveS3ReadObjectVersion(ctx, out, key, limit, "")
+}
+
+func archiveS3ReadObjectVersion(ctx context.Context, out *s3Output, key string, limit int64, expectedETag string) ([]byte, map[string]string, error) {
 	request, cancel := context.WithTimeout(ctx, out.timeout)
 	defer cancel()
-	object, err := out.client.GetObject(request, &s3.GetObjectInput{Bucket: aws.String(out.bucket), Key: aws.String(key)})
+	input := &s3.GetObjectInput{Bucket: aws.String(out.bucket), Key: aws.String(key)}
+	if expectedETag != "" {
+		input.IfMatch = aws.String(expectedETag)
+	}
+	object, err := out.client.GetObject(request, input)
 	if err != nil {
 		return nil, nil, err
 	}
 	defer object.Body.Close()
+	if actual := aws.ToString(object.ETag); expectedETag != "" && actual != "" && actual != expectedETag {
+		return nil, nil, fmt.Errorf("S3 object %q changed since it was listed", key)
+	}
 	if object.ContentLength != nil && *object.ContentLength > limit {
 		return nil, nil, fmt.Errorf("S3 object %q exceeds %d bytes", key, limit)
 	}
@@ -266,6 +321,12 @@ func archiveS3Key(prefix, relative string) string {
 }
 
 func archiveS3Walk(ctx context.Context, out *s3Output, prefix string, visit func(key, relative string, size int64) error) error {
+	return archiveS3WalkVersioned(ctx, out, prefix, func(key, relative string, size int64, _ string) error {
+		return visit(key, relative, size)
+	})
+}
+
+func archiveS3WalkVersioned(ctx context.Context, out *s3Output, prefix string, visit func(key, relative string, size int64, etag string) error) error {
 	prefix = strings.TrimRight(prefix, "/")
 	if prefix != "" {
 		prefix += "/"
@@ -287,7 +348,7 @@ func archiveS3Walk(ctx context.Context, out *s3Output, prefix string, visit func
 			if !strings.HasPrefix(key, prefix) {
 				return fmt.Errorf("S3 listing returned a key outside the requested prefix")
 			}
-			if err := visit(key, strings.TrimPrefix(key, prefix), aws.ToInt64(object.Size)); err != nil {
+			if err := visit(key, strings.TrimPrefix(key, prefix), aws.ToInt64(object.Size), aws.ToString(object.ETag)); err != nil {
 				return err
 			}
 		}
@@ -343,7 +404,7 @@ func archiveS3TilesToMBTiles(ctx context.Context, out *s3Output, prefix, filenam
 		return result, err
 	}
 	extent := archiveExtent{}
-	err = archiveS3Walk(ctx, out, prefix, func(key, relative string, size int64) error {
+	err = archiveS3WalkVersioned(ctx, out, prefix, func(key, relative string, size int64, etag string) error {
 		if strings.HasSuffix(key, "/") || relative == "metadata.json" {
 			return nil
 		}
@@ -354,7 +415,10 @@ func archiveS3TilesToMBTiles(ctx context.Context, out *s3Output, prefix, filenam
 		if !matches {
 			return nil
 		}
-		body, identity, err := archiveS3ReadObjectInfo(ctx, out, key, maxTileDataBytes)
+		if size > maxTileDataBytes {
+			return fmt.Errorf("S3 tile %q exceeds the 64 MiB limit", key)
+		}
+		body, identity, err := archiveS3ReadObjectVersion(ctx, out, key, maxTileDataBytes, etag)
 		if err != nil {
 			return fmt.Errorf("read S3 tile %q: %w", key, err)
 		}
@@ -510,6 +574,7 @@ func archiveS3ConvertToTiles(ctx context.Context, out *s3Output, input, prefix, 
 	if err != nil {
 		return result, err
 	}
+	hasDeclaredFormat := listedFormat != ""
 	oldExtent := archiveExtent{}
 	anyObjects := hasMetadata
 	firstExisting := (*maptile.Tile)(nil)
@@ -574,7 +639,7 @@ func archiveS3ConvertToTiles(ctx context.Context, out *s3Output, input, prefix, 
 			}
 		}
 		if listedFormat == "" {
-			body, err := archiveS3ReadObject(ctx, out, key, 256<<20)
+			body, err := archiveS3ReadObject(ctx, out, key, maxTileDataBytes)
 			if err != nil {
 				return result, err
 			}
@@ -588,6 +653,7 @@ func archiveS3ConvertToTiles(ctx context.Context, out *s3Output, input, prefix, 
 	staged := filepath.Join(work, "s3-tiles.mbtiles")
 	local := opts
 	local.OutputKind, local.Append, local.Overwrite, local.OutputTilePath = "mbtiles", false, false, ""
+	local.allowMissingVectorMetadata = true
 	result, err = convertLocalArchive(ctx, input, staged, local)
 	if err != nil {
 		return result, err
@@ -610,6 +676,43 @@ func archiveS3ConvertToTiles(ctx context.Context, out *s3Output, input, prefix, 
 			return result, fmt.Errorf("existing custom-layout S3 tiles need layout metadata before they can be extended")
 		}
 		if _, err := out.exists(ctx, *firstExisting, result.Format); err != nil {
+			return result, err
+		}
+	}
+	// Validate every retained tile, not just an overlapping input tile or the
+	// first listed object. Otherwise mixed layouts from older direct downloads
+	// could be hidden behind the new prefix metadata after a successful append.
+	if anyObjects {
+		if err := archiveS3Walk(ctx, out, prefix, func(key, relative string, size int64) error {
+			tile, pathFormat, matched, err := parseTilePath(pattern, relative)
+			if err != nil || !matched || size <= 0 {
+				return err
+			}
+			head, exists, err := archiveS3Head(ctx, out, key)
+			if err != nil {
+				return err
+			}
+			if !exists || head.ContentLength == nil || aws.ToInt64(head.ContentLength) != size {
+				return fmt.Errorf("existing S3 tile %q changed while preparing the conversion", key)
+			}
+			if err := out.validateTileIdentity(head.Metadata, tile, result.Format); err != nil {
+				return fmt.Errorf("existing S3 tile %q: %w", key, err)
+			}
+			// Without an extension, prefix format, or per-object marker, the
+			// first tile's detected encoding cannot describe every retained
+			// tile. Check those legacy payloads before publishing one format.
+			if pathFormat == "" && !hasDeclaredFormat && head.Metadata["tiler-format"] == "" {
+				body, _, err := archiveS3ReadObjectVersion(ctx, out, key, maxTileDataBytes, aws.ToString(head.ETag))
+				if err != nil {
+					return fmt.Errorf("read existing S3 tile %q: %w", key, err)
+				}
+				format, err := archiveInferFormat(body)
+				if err != nil || !sameS3TileEncoding(format, result.Format) {
+					return fmt.Errorf("existing S3 tile %q has a different or invalid format; use a new output prefix", key)
+				}
+			}
+			return nil
+		}); err != nil {
 			return result, err
 		}
 	}
@@ -642,6 +745,9 @@ func archiveS3ConvertToTiles(ctx context.Context, out *s3Output, input, prefix, 
 	metadataBody, err := json.MarshalIndent(metadata, "", "  ")
 	if err != nil {
 		return result, err
+	}
+	if len(metadataBody) > 16<<20 {
+		return result, fmt.Errorf("S3 output metadata.json exceeds 16 MiB")
 	}
 	rows, err := tx.QueryContext(ctx, "SELECT zoom_level,tile_column,tile_row,tile_data FROM tiles ORDER BY zoom_level,tile_column,tile_row")
 	if err != nil {
@@ -722,7 +828,7 @@ func archiveS3MergeMetadata(old, incoming map[string]string, before, added archi
 			bounds[2], bounds[3] = math.Max(bounds[2], parsed[2]), math.Max(bounds[3], parsed[3])
 		}
 	}
-	metadata["bounds"] = fmt.Sprintf("%.7f,%.7f,%.7f,%.7f", bounds[0], bounds[1], bounds[2], bounds[3])
+	metadata["bounds"] = archiveBoundsText(bounds)
 	delete(metadata, "center")
 	if err := archiveCompleteMetadata(metadata, format, metadata["name"], combined); err != nil {
 		return nil, err

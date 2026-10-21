@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path"
@@ -52,7 +53,8 @@ type archiveUploadFile struct {
 // Files are processed in input order and directory entries in lexical order.
 // On failure the result contains only the files already uploaded completely.
 // Close SQLite writers and checkpoint MBTiles databases before uploading them;
-// a nonempty WAL sidecar means the standalone database file is incomplete.
+// an uncheckpointed WAL or active rollback journal means the standalone
+// database file is incomplete.
 func UploadArchives(ctx context.Context, out *s3Output, inputs []string, opts ArchiveUploadOptions) (ArchiveUploadResult, error) {
 	var result ArchiveUploadResult
 	if ctx == nil {
@@ -119,6 +121,11 @@ func UploadArchives(ctx context.Context, out *s3Output, inputs []string, opts Ar
 func planArchiveUploads(ctx context.Context, prefix string, inputs []string) ([]archiveUploadFile, error) {
 	if len(inputs) == 0 {
 		return nil, fmt.Errorf("provide at least one .mbtiles/.pmtiles archive or directory")
+	}
+	var err error
+	prefix, err = normalizeS3Prefix(prefix)
+	if err != nil {
+		return nil, err
 	}
 	var files []archiveUploadFile
 	keys := make(map[string]string)
@@ -227,15 +234,36 @@ func checkArchiveUploadWAL(filename string) error {
 	if !strings.EqualFold(filepath.Ext(filename), ".mbtiles") {
 		return nil
 	}
-	wal := filename + "-wal"
-	info, err := os.Stat(wal)
-	if os.IsNotExist(err) {
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("check MBTiles WAL %s: %w", wal, err)
-	}
-	if !info.Mode().IsRegular() || info.Size() > 0 {
+	for _, suffix := range []string{"-wal", "-journal"} {
+		name := filename + suffix
+		info, err := os.Lstat(name)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("check MBTiles SQLite sidecar %s: %w", name, err)
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("MBTiles SQLite sidecar %s must be a regular file", name)
+		}
+		if info.Size() == 0 {
+			continue
+		}
+		if suffix == "-journal" {
+			// PERSIST mode keeps an inactive journal after commit with its
+			// header zeroed. A hot rollback journal must never be omitted.
+			file, err := os.Open(name)
+			if err != nil {
+				return err
+			}
+			var header [8]byte
+			_, readErr := io.ReadFull(file, header[:])
+			closeErr := file.Close()
+			if readErr == nil && closeErr == nil && header == [8]byte{} {
+				continue
+			}
+			return fmt.Errorf("MBTiles %s has an active rollback journal; close the SQLite writer before uploading", filename)
+		}
 		return fmt.Errorf("MBTiles %s has an uncheckpointed WAL sidecar; close the SQLite writer and checkpoint the database before uploading", filename)
 	}
 	return nil

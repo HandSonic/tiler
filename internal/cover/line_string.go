@@ -3,6 +3,8 @@
 package cover
 
 import (
+	"context"
+	"fmt"
 	"math"
 
 	"github.com/paulmach/orb"
@@ -58,8 +60,8 @@ func line(
 	var x, y float64
 
 	for i := 0; i < len(line)-1; i++ {
-		start := maptile.Fraction(line[i], zoom)
-		stop := maptile.Fraction(line[i+1], zoom)
+		start := gridFraction(line[i], zoom)
+		stop := gridFraction(line[i+1], zoom)
 
 		dx := stop[0] - start[0]
 		dy := stop[1] - start[1]
@@ -110,8 +112,8 @@ func line(
 			prevY = y
 		}
 
-		for tMaxX < 1 || tMaxY < 1 {
-			if tMaxX < tMaxY {
+		for x != math.Floor(stop[0]) || y != math.Floor(stop[1]) {
+			if x != math.Floor(stop[0]) && (y == math.Floor(stop[1]) || tMaxX < tMaxY) {
 				tMaxX += tdx
 				x += sx
 			} else {
@@ -128,7 +130,7 @@ func line(
 		}
 	}
 
-	if ring != nil && uint32(y) == ring[0][1] {
+	if len(ring) > 0 && uint32(y) == ring[0][1] {
 		ring = ring[:len(ring)-1]
 	}
 
@@ -150,8 +152,8 @@ func lineCount(
 	var x, y float64
 
 	for i := 0; i < len(line)-1; i++ {
-		start := maptile.Fraction(line[i], zoom)
-		stop := maptile.Fraction(line[i+1], zoom)
+		start := gridFraction(line[i], zoom)
+		stop := gridFraction(line[i+1], zoom)
 
 		dx := stop[0] - start[0]
 		dy := stop[1] - start[1]
@@ -203,8 +205,8 @@ func lineCount(
 			prevY = y
 		}
 
-		for tMaxX < 1 || tMaxY < 1 {
-			if tMaxX < tMaxY {
+		for x != math.Floor(stop[0]) || y != math.Floor(stop[1]) {
+			if x != math.Floor(stop[0]) && (y == math.Floor(stop[1]) || tMaxX < tMaxY) {
 				tMaxX += tdx
 				x += sx
 			} else {
@@ -222,7 +224,7 @@ func lineCount(
 		}
 	}
 
-	if ring != nil && uint32(y) == ring[0][1] {
+	if len(ring) > 0 && uint32(y) == ring[0][1] {
 		ring = ring[:len(ring)-1]
 	}
 
@@ -230,6 +232,7 @@ func lineCount(
 }
 
 func lineWalk(
+	ctx context.Context,
 	line orb.LineString,
 	zoom maptile.Zoom,
 	ring [][2]uint32,
@@ -244,13 +247,29 @@ func lineWalk(
 	var x, y float64
 
 	for i := 0; i < len(line)-1; i++ {
-		start := maptile.Fraction(line[i], zoom)
-		stop := maptile.Fraction(line[i+1], zoom)
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		start := gridFraction(line[i], zoom)
+		stop := gridFraction(line[i+1], zoom)
 
 		dx := stop[0] - start[0]
 		dy := stop[1] - start[1]
 
 		if dy == 0 && dx == 0 {
+			x, y = math.Floor(start[0]), math.Floor(start[1])
+			if x != prevX || y != prevY {
+				if err := emit(maptile.New(uint32(x), uint32(y), zoom)); err != nil {
+					return nil, err
+				}
+				if ring != nil && y != prevY {
+					ring = append(ring, [2]uint32{uint32(x), uint32(y)})
+					if len(ring) > maxBoundaryTiles {
+						return nil, fmt.Errorf("polygon boundary exceeds memory budget; split the region or reduce zoom")
+					}
+				}
+				prevX, prevY = x, y
+			}
 			continue
 		}
 
@@ -294,13 +313,16 @@ func lineWalk(
 			}
 			if ring != nil && y != prevY {
 				ring = append(ring, [2]uint32{uint32(x), uint32(y)})
+				if len(ring) > maxBoundaryTiles {
+					return nil, fmt.Errorf("polygon boundary exceeds memory budget; split the region or reduce zoom")
+				}
 			}
 			prevX = x
 			prevY = y
 		}
 
-		for tMaxX < 1 || tMaxY < 1 {
-			if tMaxX < tMaxY {
+		for x != math.Floor(stop[0]) || y != math.Floor(stop[1]) {
+			if x != math.Floor(stop[0]) && (y == math.Floor(stop[1]) || tMaxX < tMaxY) {
 				tMaxX += tdx
 				x += sx
 			} else {
@@ -314,13 +336,16 @@ func lineWalk(
 			}
 			if ring != nil && y != prevY {
 				ring = append(ring, [2]uint32{uint32(x), uint32(y)})
+				if len(ring) > maxBoundaryTiles {
+					return nil, fmt.Errorf("polygon boundary exceeds memory budget; split the region or reduce zoom")
+				}
 			}
 			prevX = x
 			prevY = y
 		}
 	}
 
-	if ring != nil && uint32(y) == ring[0][1] {
+	if len(ring) > 0 && uint32(y) == ring[0][1] {
 		ring = ring[:len(ring)-1]
 	}
 

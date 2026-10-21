@@ -65,6 +65,8 @@ func runConvertCLI(args []string, stdout, stderr io.Writer) error {
 	if *overwrite && *appendTiles {
 		return fmt.Errorf("choose either -append or -overwrite")
 	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
 	if *config != "" || strings.HasPrefix(strings.ToLower(*input), "s3://") || strings.HasPrefix(strings.ToLower(*output), "s3://") {
 		if *config == "" {
 			*config = "conf.toml"
@@ -78,6 +80,16 @@ func runConvertCLI(args []string, stdout, stderr io.Writer) error {
 		metadata["json"] = viper.GetString("tm.json")
 	}
 	if *metadataFile != "" {
+		info, err := os.Stat(*metadataFile)
+		if err != nil {
+			return err
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("metadata must be a regular file")
+		}
+		if info.Size() > 16*1024*1024 {
+			return fmt.Errorf("metadata exceeds 16 MiB")
+		}
 		file, err := os.Open(*metadataFile)
 		if err != nil {
 			return err
@@ -108,8 +120,9 @@ func runConvertCLI(args []string, stdout, stderr io.Writer) error {
 	if *name != "" {
 		metadata["name"] = *name
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer stop()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	result, err := ConvertArchive(ctx, *input, *output, ArchiveConvertOptions{Format: *format, Overwrite: *overwrite, Append: *appendTiles, Metadata: metadata, InputTilePath: *inputPath, OutputTilePath: *outputPath, OutputKind: *outputKind})
 	if err != nil {
 		return err
@@ -201,6 +214,8 @@ func runDownloadCLI(command string, args []string, stdout, stderr io.Writer) err
 	if err := initConf(*config); err != nil {
 		return err
 	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
 	layers, tm, err := configuredLayers()
 	if err != nil {
 		return err
@@ -211,12 +226,12 @@ func runDownloadCLI(command string, args []string, stdout, stderr io.Writer) err
 		if err != nil {
 			return err
 		}
-		task, err = NewRepairTask(layers, tm, manifest, *failures)
+		task, err = NewRepairTaskContext(ctx, layers, tm, manifest, *failures)
 		if err != nil {
 			return err
 		}
 	} else {
-		task = NewTask(layers, tm)
+		task = NewTaskContext(ctx, layers, tm)
 	}
 	if task == nil {
 		return fmt.Errorf("no download layers configured")
@@ -226,8 +241,6 @@ func runDownloadCLI(command string, args []string, stdout, stderr io.Writer) err
 		fmt.Fprintln(stdout, "Failure manifest is empty; no tiles need repair.")
 		return nil
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer stop()
 	finished := make(chan struct{})
 	defer close(finished)
 	go func() {

@@ -13,6 +13,13 @@ import (
 )
 
 func NewRepairTask(layers []Layer, tm TileMap, manifest *FailureManifest, manifestPath string) (*Task, error) {
+	return NewRepairTaskContext(context.Background(), layers, tm, manifest, manifestPath)
+}
+
+func NewRepairTaskContext(ctx context.Context, layers []Layer, tm TileMap, manifest *FailureManifest, manifestPath string) (*Task, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if manifest == nil {
 		return nil, fmt.Errorf("repair requires a failure manifest")
 	}
@@ -64,7 +71,7 @@ func NewRepairTask(layers []Layer, tm TileMap, manifest *FailureManifest, manife
 			return nil, fmt.Errorf("repair S3 bucket and prefix must match the manifest target")
 		}
 		var err error
-		s3Destination, err = newS3Output(context.Background())
+		s3Destination, err = newS3Output(ctx)
 		if err != nil {
 			return nil, err
 		}
@@ -72,7 +79,7 @@ func NewRepairTask(layers []Layer, tm TileMap, manifest *FailureManifest, manife
 			return nil, fmt.Errorf("repair S3 endpoint and region must match the manifest target")
 		}
 	}
-	task := newDownloadTask(layers, tm, manifest)
+	task := newDownloadTaskContext(ctx, layers, tm, manifest)
 	if task == nil {
 		return nil, fmt.Errorf("repair requires source layers")
 	}
@@ -97,6 +104,13 @@ func NewRepairTask(layers []Layer, tm TileMap, manifest *FailureManifest, manife
 }
 
 func validateExistingRepairTarget(kind, path string) error {
+	checkedPath := path
+	if kind == "file" {
+		checkedPath = filepath.Join(path, "metadata.json")
+	}
+	if err := validateOutputFilePath(viper.GetString("output.directory"), checkedPath); err != nil {
+		return fmt.Errorf("unsafe original repair target: %w", err)
+	}
 	info, err := os.Stat(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -165,6 +179,9 @@ func (task *Task) setupFailureManifest() error {
 	if strings.ToLower(filepath.Ext(path)) != ".json" {
 		return fmt.Errorf("output.failure_file must be a .json path")
 	}
+	if err := validateFailureManifestSafety(path); err != nil {
+		return fmt.Errorf("unsafe failure manifest path: %w", err)
+	}
 	if task.outformat == "file" {
 		metadata, err := filepath.Abs(filepath.Join(task.File, "metadata.json"))
 		if err != nil {
@@ -218,7 +235,7 @@ func (task *Task) setupFailureManifest() error {
 	if err := task.manifest.SetTarget(target); err != nil {
 		return err
 	}
-	if task.resume && !task.repairMode {
+	if !task.repairMode {
 		if _, err := os.Stat(path); err == nil {
 			previous, err := LoadFailureManifest(path)
 			if err != nil {
@@ -233,15 +250,29 @@ func (task *Task) setupFailureManifest() error {
 			if !oldOK || !sameFailureTarget(oldTarget, currentTarget) {
 				return fmt.Errorf("existing failure manifest belongs to a different output target; keep the original destination or choose a separate output.failure_file")
 			}
-			// Retain failures from previous regions, even when the current job
-			// visits only a newly appended region. Successful saves resolve them.
-			task.manifest = previous
+			if task.resume {
+				// Retain failures from previous regions, even when the current job
+				// visits only a newly appended region. Successful saves resolve them.
+				task.manifest = previous
+			}
 		} else if !os.IsNotExist(err) {
 			return err
 		}
 	}
 	task.failurePath = path
 	return nil
+}
+
+func validateFailureManifestSafety(path string) error {
+	root, err := filepath.Abs(viper.GetString("output.directory"))
+	if err != nil {
+		return err
+	}
+	relative, err := filepath.Rel(root, path)
+	if err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return validateOutputFilePath(root, path)
+	}
+	return validateOutputPathSafety(path)
 }
 
 func sameFailureTarget(a, b FailureTarget) bool {

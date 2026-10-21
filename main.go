@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"database/sql"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
@@ -29,14 +31,37 @@ func init() {
 
 // initConf 初始化配置
 func initConf(cfgFile string) error {
-	if _, err := os.Stat(cfgFile); os.IsNotExist(err) {
-		return fmt.Errorf("config file %s does not exist", cfgFile)
+	const maxConfigSize = 16 * 1024 * 1024
+	info, err := os.Stat(cfgFile)
+	if err != nil {
+		return fmt.Errorf("inspect config file %s: %w", cfgFile, err)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("config file must be a regular file: %s", cfgFile)
+	}
+	if info.Size() > maxConfigSize {
+		return fmt.Errorf("config file exceeds 16 MiB: %s", cfgFile)
+	}
+	file, err := os.Open(cfgFile)
+	if err != nil {
+		return fmt.Errorf("open config file %s: %w", cfgFile, err)
+	}
+	body, err := io.ReadAll(io.LimitReader(file, maxConfigSize+1))
+	closeErr := file.Close()
+	if err != nil {
+		return fmt.Errorf("read config file %s: %w", cfgFile, err)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("close config file %s: %w", cfgFile, closeErr)
+	}
+	if len(body) > maxConfigSize {
+		return fmt.Errorf("config file exceeds 16 MiB: %s", cfgFile)
 	}
 	viper.SetConfigType("toml")
 	viper.SetConfigFile(cfgFile)
 	viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	viper.AutomaticEnv() // read in environment variables that match
-	err := viper.ReadInConfig()
+	err = viper.ReadConfig(bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("read config file %s: %w", cfgFile, err)
 	}

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"image/color"
 	"net/http"
 	"net/http/httptest"
@@ -244,5 +245,80 @@ func TestDownloadFileResumeRejectsChangedLayoutAndAcceptsLegacyXYZ(t *testing.T)
 	after, _ := os.ReadFile(filepath.Join(task.File, "metadata.json"))
 	if !bytes.Equal(before, after) {
 		t.Fatal("invalid resume configuration changed original metadata")
+	}
+}
+
+func TestDownloadFileMetadataRejectsNullCoordinateArrays(t *testing.T) {
+	for _, key := range []string{"bounds", "center"} {
+		t.Run(key, func(t *testing.T) {
+			filename := filepath.Join(t.TempDir(), "metadata.json")
+			for _, value := range []string{`[null,0,1,1]`, `null`} {
+				body := fmt.Sprintf(`{"%s":%s}`, key, value)
+				if err := os.WriteFile(filename, []byte(body), 0600); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := readDownloadFileMetadata(filename); err == nil {
+					t.Fatal("null metadata coordinate was silently converted to zero or omitted")
+				}
+			}
+		})
+	}
+}
+
+func TestDownloadMetadataRejectsReversedExistingZoomIntervals(t *testing.T) {
+	incoming := map[string]string{"format": "png", "bounds": "-10,-10,10,10", "minzoom": "5", "maxzoom": "10"}
+	previous := map[string]string{"format": "png", "bounds": "-10,-10,10,10", "minzoom": "15", "maxzoom": "1"}
+	if _, err := mergeDownloadMetadata(previous, incoming, false); err == nil {
+		t.Error("reversed existing dataset zooms were silently hidden by the incoming range")
+	}
+	incoming["json"] = `{"vector_layers":[{"id":"test","fields":{},"minzoom":15,"maxzoom":1}]}`
+	if _, err := mergeDownloadMetadata(nil, incoming, false); err == nil {
+		t.Error("reversed vector layer zooms were accepted")
+	}
+}
+
+func TestDownloadVectorLayerMergePreservesOmittedZoomLimits(t *testing.T) {
+	for _, oldJSON := range []string{
+		`{"vector_layers":[{"id":"test","fields":{}}]}`,
+		`{"vector_layers":[{"id":"test","fields":{},"minzoom":0,"maxzoom":0}]}`,
+	} {
+		newJSON := `{"vector_layers":[{"id":"test","fields":{},"minzoom":3,"maxzoom":3}]}`
+		if strings.Contains(oldJSON, "minzoom") {
+			newJSON = `{"vector_layers":[{"id":"test","fields":{}}]}`
+		}
+		old := map[string]string{"format": PBF, "bounds": "0,0,1,1", "minzoom": "0", "maxzoom": "0", "json": oldJSON}
+		incoming := map[string]string{"format": PBF, "bounds": "0,0,1,1", "minzoom": "3", "maxzoom": "3", "json": newJSON}
+		merged, err := mergeDownloadMetadata(old, incoming, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var description map[string]interface{}
+		if err := json.Unmarshal([]byte(merged["json"]), &description); err != nil {
+			t.Fatal(err)
+		}
+		layer := description["vector_layers"].([]interface{})[0].(map[string]interface{})
+		if _, exists := layer["minzoom"]; exists {
+			t.Error("merging a bounded layer narrowed an omitted minzoom")
+		}
+		if _, exists := layer["maxzoom"]; exists {
+			t.Error("merging a bounded layer narrowed an omitted maxzoom")
+		}
+	}
+}
+
+func TestDownloadMBMetadataChecksSizeBeforeLoadingValues(t *testing.T) {
+	db, err := sql.Open("sqlite3", filepath.Join(t.TempDir(), "large.mbtiles"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec("create table metadata (name text,value text)"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("insert into metadata (name,value) values ('large',zeroblob(?))", (16<<20)+1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readDownloadMBMetadata(db); err == nil || !strings.Contains(err.Error(), "16 MiB") {
+		t.Fatalf("oversized MBTiles metadata was loaded before its size was checked: %v", err)
 	}
 }

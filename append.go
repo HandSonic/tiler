@@ -39,17 +39,23 @@ func readDownloadFileMetadata(filename string) (map[string]string, error) {
 	}
 	metadata := make(map[string]string, len(raw))
 	for key, value := range raw {
+		if (key == "bounds" || key == "center") && strings.TrimSpace(string(value)) == "null" {
+			return nil, fmt.Errorf("existing metadata %s cannot be null", key)
+		}
 		var text string
 		if json.Unmarshal(value, &text) == nil {
 			metadata[key] = text
 		} else {
 			metadata[key] = string(value)
 			if key == "bounds" || key == "center" {
-				var numbers []float64
+				var numbers []*float64
 				if json.Unmarshal(value, &numbers) == nil && len(numbers) > 0 {
 					parts := make([]string, len(numbers))
 					for i, number := range numbers {
-						parts[i] = strconv.FormatFloat(number, 'g', -1, 64)
+						if number == nil {
+							return nil, fmt.Errorf("existing metadata %s coordinates cannot be null", key)
+						}
+						parts[i] = strconv.FormatFloat(*number, 'g', -1, 64)
 					}
 					metadata[key] = strings.Join(parts, ",")
 				}
@@ -60,6 +66,13 @@ func readDownloadFileMetadata(filename string) (map[string]string, error) {
 }
 
 func readDownloadMBMetadata(db *sql.DB) (map[string]string, error) {
+	var total int64
+	if err := db.QueryRow("select coalesce(sum(coalesce(length(cast(name as blob)),0) + coalesce(length(cast(value as blob)),0)),0) from metadata").Scan(&total); err != nil {
+		return nil, fmt.Errorf("read existing MBTiles metadata size: %w", err)
+	}
+	if total > 16<<20 {
+		return nil, fmt.Errorf("existing MBTiles metadata exceeds 16 MiB")
+	}
 	rows, err := db.Query("select name, value from metadata")
 	if err != nil {
 		return nil, fmt.Errorf("read existing MBTiles metadata: %w", err)
@@ -79,11 +92,50 @@ func readDownloadMBMetadata(db *sql.DB) (map[string]string, error) {
 // validateFileResumeMetadata runs before the output directory or its metadata
 // is changed. The save operation repeats the check before publishing metadata.
 func (task *Task) validateFileResumeMetadata() error {
-	if task.outformat != "file" || !task.resume || task.repairMode {
+	if task.outformat != "file" || !task.resume {
 		return nil
 	}
 	_, err := task.fileMetadataForDownload()
 	return err
+}
+
+func validateDownloadMBMetadata(metadata map[string]string) error {
+	if metadata["type"] != "overlay" && metadata["type"] != "baselayer" {
+		metadata["type"] = "baselayer"
+	}
+	if strings.EqualFold(strings.TrimSpace(metadata["format"]), PBF) {
+		// MBTiles requires the JSON metadata entry, rather than a separate
+		// top-level vector_layers row, for describing vector tile layers.
+		var description map[string]interface{}
+		if err := json.Unmarshal([]byte(metadata["json"]), &description); err != nil || description == nil {
+			return fmt.Errorf("PBF MBTiles requires json metadata containing vector_layers")
+		}
+		if _, err := mergeDownloadVectorLayers(nil, description["vector_layers"]); err != nil {
+			return fmt.Errorf("invalid PBF MBTiles vector_layers: %w", err)
+		}
+		if _, ok := description["vector_layers"].([]interface{}); !ok {
+			return fmt.Errorf("PBF MBTiles requires vector_layers as a JSON array")
+		}
+		minZoom, maxZoom := 0, 30
+		for key, destination := range map[string]*int{"minzoom": &minZoom, "maxzoom": &maxZoom} {
+			if value := metadata[key]; value != "" {
+				zoom, err := downloadMetadataZoom(value)
+				if err != nil {
+					return err
+				}
+				*destination = zoom
+			}
+		}
+		if err := archiveValidateMBVectorMetadata(description, minZoom, maxZoom); err != nil {
+			return fmt.Errorf("invalid PBF MBTiles vector metadata: %w", err)
+		}
+		encoded, err := json.Marshal(description)
+		if err != nil {
+			return err
+		}
+		metadata["json"] = string(encoded)
+	}
+	return archiveValidateMetadataSize(metadata)
 }
 
 func (task *Task) fileMetadataForDownload() (map[string]string, error) {
@@ -135,6 +187,13 @@ func mergeDownloadMetadata(existing, incoming map[string]string, fileOutput bool
 		}
 		if !fileOutput && oldFormat == "" {
 			return nil, fmt.Errorf("existing MBTiles metadata is missing format; cannot safely resume or append")
+		}
+		if existing["minzoom"] != "" && existing["maxzoom"] != "" {
+			low, lowErr := downloadMetadataZoom(existing["minzoom"])
+			high, highErr := downloadMetadataZoom(existing["maxzoom"])
+			if lowErr != nil || highErr != nil || low > high {
+				return nil, fmt.Errorf("invalid existing output zoom interval")
+			}
 		}
 		for name, value := range existing {
 			if value != "" {
@@ -370,6 +429,11 @@ func mergeDownloadVectorLayers(previous, current interface{}) ([]interface{}, er
 					}
 				}
 			}
+			if low, lowOK := layer["minzoom"].(float64); lowOK {
+				if high, highOK := layer["maxzoom"].(float64); highOK && low > high {
+					return nil, fmt.Errorf("vector layer %q has a reversed zoom interval", id)
+				}
+			}
 			old, exists := index[id]
 			if !exists {
 				index[id] = layer
@@ -383,26 +447,28 @@ func mergeDownloadVectorLayers(previous, current interface{}) ([]interface{}, er
 				}
 				oldFields[key] = value
 			}
+			for _, key := range []string{"minzoom", "maxzoom"} {
+				previous, hadPrevious := old[key]
+				current, hasCurrent := layer[key]
+				if !hadPrevious || !hasCurrent {
+					// An omitted limit covers that source's full dataset range.
+					// Only two explicit limits can restrict the merged layer.
+					delete(old, key)
+					continue
+				}
+				a, b := previous.(float64), current.(float64)
+				if key == "minzoom" {
+					old[key] = math.Min(a, b)
+				} else {
+					old[key] = math.Max(a, b)
+				}
+			}
 			for key, value := range layer {
-				if key == "fields" {
+				if key == "fields" || key == "minzoom" || key == "maxzoom" {
 					continue
 				}
-				previous, exists := old[key]
-				if !exists {
+				if _, exists := old[key]; !exists {
 					old[key] = value
-					continue
-				}
-				if key == "minzoom" || key == "maxzoom" {
-					a, aOK := previous.(float64)
-					b, bOK := value.(float64)
-					if !aOK || !bOK || math.IsNaN(a) || math.IsNaN(b) || a < 0 || b < 0 || a > 30 || b > 30 {
-						return nil, fmt.Errorf("vector layer %q has invalid zoom metadata", id)
-					}
-					if key == "minzoom" {
-						old[key] = math.Min(a, b)
-					} else {
-						old[key] = math.Max(a, b)
-					}
 				}
 			}
 		}

@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"path"
 	"strings"
 	"time"
 
@@ -40,6 +39,10 @@ func newS3OutputForBucket(ctx context.Context, bucket string) (*s3Output, error)
 	bucket = strings.TrimSpace(bucket)
 	if bucket == "" {
 		return nil, fmt.Errorf("output.s3.bucket is required")
+	}
+	prefix, err := normalizeS3Prefix(viper.GetString("output.s3.prefix"))
+	if err != nil {
+		return nil, fmt.Errorf("output.s3.prefix: %w", err)
 	}
 	endpoint := strings.TrimSpace(viper.GetString("output.s3.endpoint"))
 	if endpoint != "" {
@@ -81,7 +84,7 @@ func newS3OutputForBucket(ctx context.Context, bucket string) (*s3Output, error)
 	return &s3Output{
 		client:              client,
 		bucket:              bucket,
-		prefix:              strings.Trim(viper.GetString("output.s3.prefix"), "/"),
+		prefix:              prefix,
 		tilePath:            viper.GetString("output.tile_path"),
 		endpointFingerprint: endpointFingerprint,
 		timeout:             time.Duration(timeoutSeconds) * time.Second,
@@ -156,30 +159,65 @@ func (out *s3Output) exists(parent context.Context, tile maptile.Tile, format st
 	if aws.ToInt64(result.ContentLength) <= 0 {
 		return false, nil
 	}
-	pattern, err := normalizeTilePath(out.tilePath)
-	if err != nil {
+	if err := out.validateTileIdentity(result.Metadata, tile, format); err != nil {
 		return false, err
-	}
-	pathHash := result.Metadata["tiler-path"]
-	if pathHash != "" && pathHash != fmt.Sprintf("%x", sha256.Sum256([]byte(pattern))) {
-		return false, fmt.Errorf("existing S3 tile uses a different tile_path; keep the original template or choose a new prefix")
-	}
-	if pathHash == "" && pattern != defaultTilePath && !out.allowUnmarkedTiles {
-		return false, fmt.Errorf("cannot confirm tile_path of an unmarked S3 tile; use the original template or a new prefix")
-	}
-	if xyz := result.Metadata["tiler-xyz"]; xyz != "" && xyz != fmt.Sprintf("%d/%d/%d", tile.Z, tile.X, tile.Y) {
-		return false, fmt.Errorf("existing S3 tile coordinates do not match the requested tile")
-	}
-	if storedFormat := result.Metadata["tiler-format"]; storedFormat != "" && !strings.EqualFold(storedFormat, format) {
-		return false, fmt.Errorf("existing S3 tile format does not match the requested format")
 	}
 	return true, nil
 }
 
+func (out *s3Output) validateTileIdentity(metadata map[string]string, tile maptile.Tile, format string) error {
+	pattern, err := normalizeTilePath(out.tilePath)
+	if err != nil {
+		return err
+	}
+	pathHash := metadata["tiler-path"]
+	if pathHash != "" && pathHash != fmt.Sprintf("%x", sha256.Sum256([]byte(pattern))) {
+		return fmt.Errorf("existing S3 tile uses a different tile_path; keep the original template or choose a new prefix")
+	}
+	if pathHash == "" && pattern != defaultTilePath && !out.allowUnmarkedTiles {
+		return fmt.Errorf("cannot confirm tile_path of an unmarked S3 tile; use the original template or a new prefix")
+	}
+	if xyz := metadata["tiler-xyz"]; xyz != "" && xyz != fmt.Sprintf("%d/%d/%d", tile.Z, tile.X, tile.Y) {
+		return fmt.Errorf("existing S3 tile coordinates do not match the requested tile")
+	}
+	if storedFormat := metadata["tiler-format"]; storedFormat != "" && !sameS3TileEncoding(storedFormat, format) {
+		return fmt.Errorf("existing S3 tile format does not match the requested format")
+	}
+	return nil
+}
+
+func sameS3TileEncoding(a, b string) bool {
+	if strings.EqualFold(a, b) {
+		return true
+	}
+	a, b = strings.ToLower(a), strings.ToLower(b)
+	return (a == "jpeg" || a == "jpg") && (b == "jpeg" || b == "jpg")
+}
+
 func (out *s3Output) tileKey(tile maptile.Tile, format string) (string, error) {
+	prefix, err := normalizeS3Prefix(out.prefix)
+	if err != nil {
+		return "", err
+	}
 	relative, err := renderTilePath(out.tilePath, tile, format)
 	if err != nil {
 		return "", err
 	}
-	return path.Join(out.prefix, relative), nil
+	if prefix == "" {
+		return relative, nil
+	}
+	return prefix + "/" + relative, nil
+}
+
+func normalizeS3Prefix(prefix string) (string, error) {
+	prefix = strings.Trim(prefix, "/")
+	if prefix == "" {
+		return "", nil
+	}
+	for _, part := range strings.Split(prefix, "/") {
+		if part == "" || part == "." || part == ".." || strings.ContainsRune(part, '\\') {
+			return "", fmt.Errorf("S3 prefix cannot contain empty segments, dot segments or backslashes")
+		}
+	}
+	return prefix, nil
 }

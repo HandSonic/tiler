@@ -15,6 +15,10 @@ import (
 
 const defaultTilePath = "{z}/{x}/{y}.{format}"
 
+// Windows extended paths have a finite UTF-16 length even when every individual
+// component is legal. Bound templates before building a potentially huge regex.
+const maxRelativeTilePathUnits = 32760
+
 type tilePathPart struct {
 	literal string
 	token   string
@@ -42,6 +46,9 @@ func normalizeTilePath(pattern string) (string, error) {
 func compiledTilePath(pattern string) (*tilePathTemplate, error) {
 	if pattern == "" {
 		pattern = defaultTilePath
+	}
+	if len(pattern) > maxRelativeTilePathUnits*4 {
+		return nil, fmt.Errorf("tile path template exceeds the Windows extended path limit")
 	}
 	if cached, ok := tilePathTemplates.Load(pattern); ok {
 		return cached.(*tilePathTemplate), nil
@@ -166,6 +173,9 @@ func parseTilePath(pattern, relative string) (tile maptile.Tile, format string, 
 	if err != nil {
 		return tile, "", false, err
 	}
+	if len(relative) > maxRelativeTilePathUnits*4 {
+		return tile, "", true, fmt.Errorf("tile path exceeds the Windows extended path limit")
+	}
 	match := template.matcher.FindStringSubmatch(relative)
 	if match == nil {
 		return tile, "", false, nil
@@ -272,6 +282,9 @@ func validateTilePathFileConflicts(pattern, format string, reservedRelativePaths
 func validateRelativeTilePath(relative string) error {
 	if relative == "" || strings.HasPrefix(relative, "/") || strings.Contains(relative, "\\") || !utf8.ValidString(relative) {
 		return fmt.Errorf("tile path must be a relative slash-separated path")
+	}
+	if len(relative) > maxRelativeTilePathUnits*4 || len(utf16.Encode([]rune(relative))) > maxRelativeTilePathUnits {
+		return fmt.Errorf("tile path exceeds the Windows extended path limit")
 	}
 	for _, segment := range strings.Split(relative, "/") {
 		if segment == "" || segment == "." || segment == ".." {

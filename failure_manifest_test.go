@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/paulmach/orb/maptile"
 )
@@ -45,6 +47,50 @@ func TestFailureSourceFingerprintKeepsLayerButAllowsCredentialRotation(t *testin
 	c, _ := FailureSourceFingerprint("https://t.example/{z}?T=vec_w&lyrs=s&key=secret")
 	if a != b || a == c {
 		t.Fatal("layer query values or query ordering were handled incorrectly")
+	}
+}
+
+func TestFailureManifestRejectsOversizedFiles(t *testing.T) {
+	filename := filepath.Join(t.TempDir(), "large.json")
+	file, err := os.Create(filename)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = file.Truncate(64<<20 + 1)
+	file.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadFailureManifest(filename); err == nil || !strings.Contains(err.Error(), "64 MiB") {
+		t.Fatalf("oversized failure report was not rejected before parsing: %v", err)
+	}
+}
+
+func TestFailureManifestRejectsFIFOWithoutBlocking(t *testing.T) {
+	command, err := exec.LookPath("mkfifo")
+	if err != nil {
+		t.Skip("mkfifo unavailable")
+	}
+	filename := filepath.Join(t.TempDir(), "failures.json")
+	if err := exec.Command(command, filename).Run(); err != nil {
+		t.Skipf("cannot create FIFO: %v", err)
+	}
+	result := make(chan error, 1)
+	go func() { _, err := LoadFailureManifest(filename); result <- err }()
+	select {
+	case err := <-result:
+		if err == nil || !strings.Contains(err.Error(), "regular") {
+			t.Errorf("FIFO error=%v", err)
+		}
+	case <-time.After(200 * time.Millisecond):
+		// Release the old blocking open so this repro cannot leak a goroutine.
+		writer, err := os.OpenFile(filename, os.O_WRONLY, 0600)
+		if err != nil {
+			t.Fatal(err)
+		}
+		writer.Close()
+		<-result
+		t.Error("opening a FIFO failure report blocked waiting for a writer")
 	}
 }
 

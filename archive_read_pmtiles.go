@@ -121,8 +121,8 @@ func archiveWalkPM(ctx context.Context, input string, visit archiveVisit) (map[s
 	const directoryEntryLimit uint64 = 1 << 20
 	var liveDirectoryBytes, liveDirectoryEntries uint64
 	active := map[uint64]bool{}
-	var walkDirectory func(offset, length uint64, depth int) error
-	walkDirectory = func(offset, length uint64, depth int) error {
+	var walkDirectory func(offset, length uint64, depth int, minimum, maximum uint64, requireFirst bool) error
+	walkDirectory = func(offset, length uint64, depth int, minimum, maximum uint64, requireFirst bool) error {
 		if depth > 8 {
 			return fmt.Errorf("PMTiles directory nesting is too deep")
 		}
@@ -143,15 +143,25 @@ func archiveWalkPM(ctx context.Context, input string, visit archiveVisit) (map[s
 		liveDirectoryEntries += uint64(len(entries))
 		defer func() { liveDirectoryBytes -= memory; liveDirectoryEntries -= uint64(len(entries)) }()
 
-		for _, entry := range entries {
+		if requireFirst && entries[0].TileId != minimum {
+			return fmt.Errorf("PMTiles leaf directory first tile ID does not match its parent entry")
+		}
+		for i, entry := range entries {
 			if err := ctx.Err(); err != nil {
 				return err
+			}
+			if entry.TileId < minimum || entry.TileId >= maximum {
+				return fmt.Errorf("PMTiles directory tile ID is outside its parent range")
+			}
+			next := maximum
+			if i+1 < len(entries) {
+				next = entries[i+1].TileId
 			}
 			if entry.RunLength == 0 {
 				if entry.Offset > header.LeafDirectoryLength || uint64(entry.Length) > header.LeafDirectoryLength-entry.Offset {
 					return fmt.Errorf("PMTiles leaf directory is outside its section")
 				}
-				if err := walkDirectory(header.LeafDirectoryOffset+entry.Offset, uint64(entry.Length), depth+1); err != nil {
+				if err := walkDirectory(header.LeafDirectoryOffset+entry.Offset, uint64(entry.Length), depth+1, entry.TileId, next, true); err != nil {
 					return err
 				}
 				continue
@@ -159,6 +169,9 @@ func archiveWalkPM(ctx context.Context, input string, visit archiveVisit) (map[s
 			end := entry.TileId + uint64(entry.RunLength)
 			if entry.TileId >= maxID || end < entry.TileId || end > maxID {
 				return fmt.Errorf("PMTiles tile ID is outside zoom 0..30")
+			}
+			if end > next {
+				return fmt.Errorf("PMTiles tile run crosses its directory entry range")
 			}
 			if hasPrevious && entry.TileId < previousEnd {
 				return fmt.Errorf("PMTiles tile runs overlap or are not ordered")
@@ -192,13 +205,13 @@ func archiveWalkPM(ctx context.Context, input string, visit archiveVisit) (map[s
 		}
 		return nil
 	}
-	if err := walkDirectory(header.RootOffset, header.RootLength, 0); err != nil {
+	if err := walkDirectory(header.RootOffset, header.RootLength, 0, 0, maxID, false); err != nil {
 		return nil, err
 	}
 	if addressed == 0 {
 		return nil, fmt.Errorf("PMTiles contains no tiles")
 	}
-	if addressed != header.AddressedTilesCount {
+	if header.AddressedTilesCount != 0 && addressed != header.AddressedTilesCount {
 		return nil, fmt.Errorf("PMTiles addressed tile count does not match its directory")
 	}
 	return metadata, nil

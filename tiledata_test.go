@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"compress/gzip"
+	"encoding/base64"
 	"encoding/binary"
 	"hash/crc32"
 	"image"
@@ -10,6 +11,7 @@ import (
 	"image/jpeg"
 	"image/png"
 	"io"
+	"math/rand"
 	"strings"
 	"testing"
 )
@@ -217,12 +219,7 @@ func TestPrepareTileDataRejectsInvalidData(t *testing.T) {
 }
 
 func TestPrepareTileDataWebPPreservation(t *testing.T) {
-	// Container checks deliberately do not claim to decode WebP pixel data.
-	body := make([]byte, 24)
-	copy(body, "RIFF")
-	binary.LittleEndian.PutUint32(body[4:8], uint32(len(body)-8))
-	copy(body[8:], "WEBPVP8 ")
-	binary.LittleEndian.PutUint32(body[16:20], 4)
+	body := tileDataWebP(t)
 	got, err := prepareTileData(body, "webp", false)
 	if err != nil {
 		t.Fatal(err)
@@ -233,5 +230,126 @@ func TestPrepareTileDataWebPPreservation(t *testing.T) {
 	body[4]++
 	if _, err := prepareTileData(body, "webp", false); err == nil {
 		t.Error("inconsistent WebP length should return an error")
+	}
+}
+
+func TestWebPAuditTranscodesAndChecksActualFrameDimensions(t *testing.T) {
+	body := tileDataWebP(t)
+	for _, format := range []string{PNG, JPG} {
+		converted, err := prepareTileData(body, format, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		img, _, err := image.Decode(bytes.NewReader(converted))
+		if err != nil || img.Bounds().Dx() != 2 || img.Bounds().Dy() != 2 {
+			t.Fatalf("WebP transcode failed: %v", err)
+		}
+	}
+	// VP8X advertises 1x1 while the inner frame advertises 8192x8192. A
+	// decoder's canvas-only DecodeConfig must not authorize that allocation.
+	payload := append([]byte(nil), body[20:35]...)
+	bits := uint32(8191) | uint32(8191)<<14
+	binary.LittleEndian.PutUint32(payload[1:5], bits)
+	var fake bytes.Buffer
+	fake.WriteString("RIFF")
+	fake.Write(make([]byte, 4))
+	fake.WriteString("WEBPVP8X")
+	binary.Write(&fake, binary.LittleEndian, uint32(10))
+	fake.Write(make([]byte, 10))
+	fake.WriteString("VP8L")
+	binary.Write(&fake, binary.LittleEndian, uint32(len(payload)))
+	fake.Write(payload)
+	fake.WriteByte(0)
+	for _, format := range []string{WEBP, PNG, JPG} {
+		oversized := append([]byte(nil), fake.Bytes()...)
+		binary.LittleEndian.PutUint32(oversized[4:8], uint32(len(oversized)-8))
+		if _, err := prepareTileData(oversized, format, false); err == nil || !strings.Contains(err.Error(), "16 megapixel") {
+			t.Fatalf("actual frame size bypassed limit (%s): %v", format, err)
+		}
+	}
+}
+
+func TestWebPAuditAcceptsLossyAlphaAndExtendedLossless(t *testing.T) {
+	// Exercise both actual frame codecs, including the extended container's
+	// separate alpha plane for VP8 and the alpha carried inside VP8L itself.
+	lossless := tileDataWebP(t)
+	extended := make([]byte, 0, len(lossless)+18)
+	extended = append(extended, lossless[:12]...)
+	extended = append(extended, 'V', 'P', '8', 'X', 10, 0, 0, 0, 0x10, 0, 0, 0, 1, 0, 0, 1, 0, 0)
+	extended = append(extended, lossless[12:]...)
+	binary.LittleEndian.PutUint32(extended[4:8], uint32(len(extended)-8))
+	for _, encoded := range []string{
+		"UklGRjwAAABXRUJQVlA4IDAAAADwAQCdASoCAAIAAUAmJaACdLoB+AAETAAA/upl//3Bx7Bx7Bx+yb/8/M7txfzmAAA=",
+		"UklGRlwAAABXRUJQVlA4WAoAAAAQAAAAAQAAAQAAQUxQSAUAAAAAgICAAABWUDggMAAAAPABAJ0BKgIAAgABQCYloAJ0ugH4AARMAAD+6mX//cHHsHHsHH7Jv/z8zu3F/OYAAA==",
+		base64.StdEncoding.EncodeToString(extended),
+	} {
+		body, err := base64.StdEncoding.DecodeString(encoded)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, format := range []string{WEBP, PNG, JPG} {
+			got, err := prepareTileData(body, format, false)
+			if err != nil {
+				t.Fatalf("valid WebP variant rejected (%s): %v", format, err)
+			}
+			if format == WEBP && !bytes.Equal(got, body) {
+				t.Fatal("WebP preservation changed its source bytes")
+			}
+			if format != WEBP {
+				img, _, err := image.Decode(bytes.NewReader(got))
+				if err != nil || img.Bounds().Dx() != 2 || img.Bounds().Dy() != 2 {
+					t.Fatalf("WebP variant transcode failed (%s): %v", format, err)
+				}
+			}
+		}
+	}
+}
+
+func tileDataWebP(t *testing.T) []byte {
+	t.Helper()
+	// A real 2x2 lossless WebP image with alpha, produced by libwebp.
+	body, err := base64.StdEncoding.DecodeString("UklGRhwAAABXRUJQVlA4TA8AAAAvAUAAEAcQ/Y8CBiKi/wEA")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return body
+}
+
+func TestWebPAuditRejectsUndecodablePayloads(t *testing.T) {
+	for _, length := range []int{20, 24} {
+		body := make([]byte, length)
+		copy(body, "RIFF")
+		binary.LittleEndian.PutUint32(body[4:8], uint32(len(body)-8))
+		copy(body[8:], "WEBPVP8 ")
+		binary.LittleEndian.PutUint32(body[16:20], uint32(len(body)-20))
+		if _, err := prepareTileData(body, WEBP, false); err == nil {
+			t.Fatalf("accepted fake %d-byte WebP tile", length)
+		}
+	}
+	truncated := tileDataWebP(t)[:25]
+	binary.LittleEndian.PutUint32(truncated[4:8], uint32(len(truncated)-8))
+	if _, err := prepareTileData(truncated, WEBP, false); err == nil {
+		t.Fatal("accepted truncated VP8L tile")
+	}
+}
+
+func TestPBFAuditRejectsTextErrorDocuments(t *testing.T) {
+	for _, body := range [][]byte{[]byte("<html><body>Access Denied</body></html>"), []byte(`{"error":"rate limited"}`), []byte("<?xml version=\"1.0\"?><Error>Forbidden</Error>")} {
+		for _, packed := range [][]byte{body, tileDataGzip(t, body)} {
+			if _, err := prepareTileData(packed, PBF, true); err == nil {
+				t.Fatalf("accepted error document as PBF: %q", body)
+			}
+		}
+	}
+}
+
+func TestPBFAuditEncodingCannotExceedReadLimit(t *testing.T) {
+	if testing.Short() {
+		t.Skip("64 MiB encoding boundary")
+	}
+	body := make([]byte, maxTileDataBytes)
+	rand.New(rand.NewSource(1)).Read(body)
+	if _, err := prepareTileData(body, PBF, true); err == nil || !strings.Contains(err.Error(), "64 MiB") {
+		t.Fatalf("encoded gzip larger than the supported read limit was accepted: %v", err)
 	}
 }

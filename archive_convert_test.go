@@ -185,6 +185,9 @@ func TestArchiveRejectsRasterVectorTranscoding(t *testing.T) {
 				body = archiveTestPNG(t, color.White)
 			}
 			archiveTestWrite(t, filepath.Join(input, "0", "0", "0."+tt.source), body)
+			if tt.source == PBF {
+				archiveTestWrite(t, filepath.Join(input, "metadata.json"), []byte(`{"vector_layers":[{"id":"test","fields":{}}]}`))
+			}
 			mbtiles := filepath.Join(t.TempDir(), "input.mbtiles")
 			if _, err := ConvertArchive(context.Background(), input, mbtiles, ArchiveConvertOptions{}); err != nil {
 				t.Fatal(err)

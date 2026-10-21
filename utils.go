@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -34,6 +35,13 @@ func saveToFiles(tile Tile, task *Task) error {
 	if err := os.MkdirAll(dir, os.ModePerm); err != nil {
 		return err
 	}
+	if err := validateOutputFilePath(task.File, fileName); err != nil {
+		return err
+	}
+	mode, err := replacementOutputMode(fileName)
+	if err != nil {
+		return err
+	}
 	// A canceled or interrupted write must not become a resumable partial tile.
 	file, err := os.CreateTemp(dir, ".tile-*")
 	if err != nil {
@@ -44,7 +52,14 @@ func saveToFiles(tile Tile, task *Task) error {
 		file.Close()
 		return err
 	}
+	if err := file.Chmod(mode); err != nil {
+		file.Close()
+		return err
+	}
 	if err := file.Close(); err != nil {
+		return err
+	}
+	if err := validateOutputFilePath(task.File, fileName); err != nil {
 		return err
 	}
 	if err := os.Rename(file.Name(), fileName); err != nil {
@@ -145,9 +160,31 @@ func loadCollection(path string) orb.Collection {
 // readCollection accepts common GeoJSON exports without logging or exiting, so
 // callers can report input errors and the parsing behavior can be tested.
 func readCollection(path string) (orb.Collection, error) {
-	data, err := os.ReadFile(path)
+	const maxGeoJSONBytes = 64 << 20
+	info, err := os.Stat(path)
 	if err != nil {
 		return nil, fmt.Errorf("read GeoJSON %s: %w", path, err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("GeoJSON %s must be a regular file", path)
+	}
+	if info.Size() > maxGeoJSONBytes {
+		return nil, fmt.Errorf("GeoJSON %s exceeds the 64 MiB input limit", path)
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("read GeoJSON %s: %w", path, err)
+	}
+	data, err := io.ReadAll(io.LimitReader(file, maxGeoJSONBytes+1))
+	closeErr := file.Close()
+	if err != nil {
+		return nil, fmt.Errorf("read GeoJSON %s: %w", path, err)
+	}
+	if closeErr != nil {
+		return nil, fmt.Errorf("close GeoJSON %s: %w", path, closeErr)
+	}
+	if len(data) > maxGeoJSONBytes {
+		return nil, fmt.Errorf("GeoJSON %s exceeds the 64 MiB input limit", path)
 	}
 	data = bytes.TrimSpace(data)
 	if len(data) == 0 {
@@ -193,8 +230,16 @@ func readCollection(path string) (orb.Collection, error) {
 		}
 		return nil
 	}
-	var decodeGeometry func(json.RawMessage) (orb.Geometry, error)
-	decodeGeometry = func(raw json.RawMessage) (orb.Geometry, error) {
+	var geometryBytes uint64
+	var decodeGeometry func(json.RawMessage, int) (orb.Geometry, error)
+	decodeGeometry = func(raw json.RawMessage, nesting int) (orb.Geometry, error) {
+		if nesting > 32 {
+			return nil, fmt.Errorf("GeoJSON GeometryCollection nesting exceeds 32 levels")
+		}
+		geometryBytes += uint64(len(raw))
+		if geometryBytes > 128<<20 {
+			return nil, fmt.Errorf("GeoJSON geometry decoding exceeds its 128 MiB work budget")
+		}
 		var geometry struct {
 			Type        string            `json:"type"`
 			Coordinates json.RawMessage   `json:"coordinates"`
@@ -218,7 +263,7 @@ func readCollection(path string) (orb.Collection, error) {
 			}
 			collection := make(orb.Collection, 0, len(geometry.Geometries))
 			for i, raw := range geometry.Geometries {
-				g, err := decodeGeometry(raw)
+				g, err := decodeGeometry(raw, nesting+1)
 				if err != nil {
 					return nil, fmt.Errorf("geometry %d: %w", i+1, err)
 				}
@@ -235,7 +280,11 @@ func readCollection(path string) (orb.Collection, error) {
 		if err != nil {
 			return nil, err
 		}
-		return g.Geometry(), nil
+		decoded := g.Geometry()
+		if err := validateGeoJSONLinearGeometry(decoded); err != nil {
+			return nil, err
+		}
+		return decoded, nil
 	}
 	decodeFeature := func(raw json.RawMessage) (orb.Geometry, error) {
 		var feature struct {
@@ -248,7 +297,7 @@ func readCollection(path string) (orb.Collection, error) {
 		if feature.Type != "Feature" {
 			return nil, fmt.Errorf("expected Feature, got %q", feature.Type)
 		}
-		return decodeGeometry(feature.Geometry)
+		return decodeGeometry(feature.Geometry, 0)
 	}
 
 	if data[0] == '[' {
@@ -266,7 +315,7 @@ func readCollection(path string) (orb.Collection, error) {
 			if len(result.GeoJSON) == 0 || bytes.Equal(bytes.TrimSpace(result.GeoJSON), []byte("null")) {
 				return nil, fmt.Errorf("Nominatim result %d in %s has no geojson; request polygon_geojson=1 when exporting", i+1, path)
 			}
-			g, err := decodeGeometry(result.GeoJSON)
+			g, err := decodeGeometry(result.GeoJSON, 0)
 			if err != nil {
 				return nil, fmt.Errorf("Nominatim result %d in %s: %w", i+1, path, err)
 			}
@@ -303,12 +352,48 @@ func readCollection(path string) (orb.Collection, error) {
 		}
 		return orb.Collection{g}, nil
 	default:
-		g, err := decodeGeometry(data)
+		g, err := decodeGeometry(data, 0)
 		if err != nil {
 			return nil, fmt.Errorf("geometry in %s: %w", path, err)
 		}
 		return orb.Collection{g}, nil
 	}
+}
+
+func validateGeoJSONLinearGeometry(geometry orb.Geometry) error {
+	checkLine := func(line orb.LineString) error {
+		if len(line) < 2 {
+			return fmt.Errorf("a GeoJSON LineString must have at least two positions")
+		}
+		return nil
+	}
+	checkPolygon := func(polygon orb.Polygon) error {
+		for _, ring := range polygon {
+			if len(ring) < 4 || ring[0] != ring[len(ring)-1] {
+				return fmt.Errorf("a GeoJSON polygon ring must have at least four positions and be closed")
+			}
+		}
+		return nil
+	}
+	switch geometry := geometry.(type) {
+	case orb.LineString:
+		return checkLine(geometry)
+	case orb.MultiLineString:
+		for _, line := range geometry {
+			if err := checkLine(line); err != nil {
+				return err
+			}
+		}
+	case orb.Polygon:
+		return checkPolygon(geometry)
+	case orb.MultiPolygon:
+		for _, polygon := range geometry {
+			if err := checkPolygon(polygon); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // output gets called if there is a test failure for debugging.

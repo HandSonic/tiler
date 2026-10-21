@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -20,6 +21,8 @@ import (
 )
 
 const FailureManifestVersion = 1
+
+const maxFailureManifestBytes = 64 << 20
 
 // FailureTarget locates the original output without keeping credentials or a
 // service endpoint in the manifest. Paths can be relative or absolute.
@@ -173,6 +176,9 @@ func (manifest *FailureManifest) Save(path string) error {
 	if err != nil {
 		return fmt.Errorf("encode failure manifest: %w", err)
 	}
+	if len(encoded)+1 > maxFailureManifestBytes {
+		return fmt.Errorf("failure manifest exceeds 64 MiB; split the download into smaller jobs")
+	}
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("create failure manifest directory: %w", err)
@@ -200,11 +206,32 @@ func (manifest *FailureManifest) Save(path string) error {
 }
 
 func LoadFailureManifest(path string) (*FailureManifest, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, fmt.Errorf("inspect failure manifest: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("failure manifest must be a regular JSON file")
+	}
+	if info.Size() > maxFailureManifestBytes {
+		return nil, fmt.Errorf("failure manifest exceeds 64 MiB")
+	}
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("open failure manifest: %w", err)
 	}
 	defer file.Close()
+	info, err = file.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("failure manifest must be a regular JSON file")
+	}
+	body, err := io.ReadAll(io.LimitReader(file, maxFailureManifestBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("read failure manifest: %w", err)
+	}
+	if len(body) > maxFailureManifestBytes {
+		return nil, fmt.Errorf("failure manifest exceeds 64 MiB")
+	}
 	var document struct {
 		Version *int              `json:"version"`
 		MapName string            `json:"map_name"`
@@ -212,7 +239,7 @@ func LoadFailureManifest(path string) (*FailureManifest, error) {
 		Target  *FailureTarget    `json:"target,omitempty"`
 		Tiles   []json.RawMessage `json:"tiles"`
 	}
-	decoder := json.NewDecoder(file)
+	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&document); err != nil {
 		return nil, fmt.Errorf("parse failure manifest: %w", err)
@@ -425,7 +452,9 @@ func sensitiveFailureQueryKey(key string) bool {
 }
 
 var failureURLPattern = regexp.MustCompile(`(?i)https?://[^\s<>"']+`)
-var failureSecretPattern = regexp.MustCompile(`(?i)\b(token|access_token|tk|key|api[_-]?key|authorization|signature|secret|secret_key|client_secret|aws_secret_access_key|password|auth|authkey|credentials?|x-amz-[a-z0-9-]+|x-goog-[a-z0-9-]+)\s*[:=]\s*[^\s,;]+`)
+var failureSecretPattern = regexp.MustCompile(`(?i)["']?\b(token|access_token|tk|key|api[_-]?key|authorization|signature|secret|secret_key|client_secret|aws_secret_access_key|password|auth|authkey|credentials?|x-amz-[a-z0-9-]+|x-goog-[a-z0-9-]+)["']?\s*[:=]\s*[^\s,;]+`)
+var failureQuotedSecretPattern = regexp.MustCompile(`(?i)["']?\b(token|access_token|tk|key|api[_-]?key|authorization|signature|secret|secret_key|client_secret|aws_secret_access_key|password|auth|authkey|credentials?|x-amz-[a-z0-9-]+|x-goog-[a-z0-9-]+)["']?\s*[:=]\s*("[^"\r\n]*"|'[^'\r\n]*')`)
+var failureAuthPattern = regexp.MustCompile(`(?i)\b(Bearer|Basic)\s+[^\s,;"'<>]+`)
 
 func safeFailureError(err error) string {
 	message := err.Error()
@@ -440,5 +469,7 @@ func safeFailureError(err error) string {
 		}
 		return u.Scheme + "://" + u.Host + "/[redacted]"
 	})
+	message = failureQuotedSecretPattern.ReplaceAllString(message, "$1=[redacted]")
+	message = failureAuthPattern.ReplaceAllString(message, "$1 [redacted]")
 	return failureSecretPattern.ReplaceAllString(message, "$1=[redacted]")
 }

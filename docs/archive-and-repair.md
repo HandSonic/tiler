@@ -92,13 +92,13 @@ tile_path = "{z}/{y}/{x}.{format}"
 ### 格式、元数据和临时文件
 
 - `png`/`jpg` 会解码并真实转码，JPEG 的透明区域合成白色背景。
-- `webp` 保留已有 WebP，不提供其他图像到 WebP 的编码。
+- `webp` 用真实解码器验证，可保留 WebP 或转为 PNG/JPEG；不提供其他图像到 WebP 的编码，动画 WebP 明确拒绝。
 - `pbf` 接受原始或已 gzip 输入；归档中规范为一层 gzip，本地散瓦片导出为原始 PBF。拒绝矢量与栅格之间的伪转换。
 - 目录中的 `metadata.json`、失败清单等不会当成瓦片。坐标错误、重复坐标、空数据或格式错误会让转换失败。
 
-为控制 Win7 等环境的内存使用，单张瓦片的编码数据和解压后数据各限制为 64 MiB；PNG/JPEG 解码前还会检查像素数，上限为 16×1024×1024 像素。PBF 最多解开四层嵌套 gzip，再按目标规范为一层 gzip 或原始数据。超出大小、像素或嵌套层数限制时会明确报错。
+为控制 Win7 等环境的内存使用，单张瓦片的编码数据和解压后数据各限制为 64 MiB；PNG/JPEG/WebP 解码前还会检查像素数，上限为 16×1024×1024 像素。PBF 最多解开四层嵌套 gzip，再按目标规范为一层 gzip 或原始数据。超出大小、像素或嵌套层数限制时会明确报错。
 
-目录读取根部 `metadata.json`，MBTiles 读取 `metadata` 表，PMTiles 读取其 JSON metadata。可用 `-metadata FILE` 补充输入元数据。PBF → PMTiles 必须提供有效的 TileJSON `vector_layers`，不会自动猜测图层。例如：
+目录读取根部 `metadata.json`，MBTiles 读取 `metadata` 表，PMTiles 读取其 JSON metadata。可用 `-metadata FILE` 补充输入元数据。PBF → MBTiles/PMTiles 必须提供有效的 `vector_layers`，不会自动猜测图层。MBTiles 将其写入 `json` 元数据，字段类型须为 `String`、`Number` 或 `Boolean`，图层 min/maxzoom 与实际导出级别取交集；散瓦片不强制要求矢量图层描述。例如：
 
 ```json
 {
@@ -162,7 +162,7 @@ timeout_seconds = 60
 
 开始网络请求前会检查输入、非空文件和目标 key 冲突；符号链接及特殊文件会被拒绝。扩展名检查不代替归档内容校验，建议上传已成功转换的文件。上传期间不要修改源文件。
 
-上传 MBTiles 前须停止数据库写入并完成 WAL checkpoint；存在非空的同名 `-wal` 文件时会拒绝上传，避免只传主数据库而漏掉尚在 WAL 中的数据。程序不会自动修改源数据库或将 sidecar 一起上传。
+上传 MBTiles 前须停止数据库写入并完成 WAL checkpoint；存在非空的同名 `-wal` 文件或活跃回滚事务日志时会拒绝上传，避免只传主数据库而漏掉尚在 WAL 中的数据。程序不会自动修改源数据库或将 sidecar 一起上传。
 
 归档逐个上传；每个文件的分段可并发。默认每文件总超时 `1h`（包含 SDK 重试），初始分段大小 `8` MiB，每文件并发 `3`。SDK 会在需要时增大分段；`-part-size-mib` 至少为 `5`，`-concurrency` 范围为 `1`–`32`。归档超时由 `-timeout` 控制，`output.s3.timeout_seconds` 仍用于直存模式的单瓦片请求。
 

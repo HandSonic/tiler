@@ -30,6 +30,8 @@ type ArchiveConvertOptions struct {
 	Append         bool
 	OutputKind     string
 	S3             *s3Output
+	// Internal loose-tile staging is not a user-facing MBTiles archive.
+	allowMissingVectorMetadata bool
 }
 
 type ArchiveConvertResult struct {
@@ -129,10 +131,21 @@ func archiveSQLiteURI(absolute string, readOnly bool) string {
 
 func archiveReadDirectoryMetadata(dir string) (map[string]string, error) {
 	metadata := make(map[string]string)
-	file, err := os.Open(filepath.Join(dir, "metadata.json"))
+	path := filepath.Join(dir, "metadata.json")
+	info, err := os.Lstat(path)
 	if os.IsNotExist(err) {
 		return metadata, nil
 	}
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("metadata.json must be a regular file")
+	}
+	if info.Size() > 16<<20 {
+		return nil, fmt.Errorf("metadata.json exceeds 16 MiB")
+	}
+	file, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
@@ -148,6 +161,9 @@ func archiveReadDirectoryMetadata(dir string) (map[string]string, error) {
 	if err := json.Unmarshal(data, &values); err != nil {
 		return nil, fmt.Errorf("read metadata.json: %w", err)
 	}
+	if values == nil {
+		return nil, fmt.Errorf("metadata.json must be an object")
+	}
 	for key, value := range values {
 		var text string
 		if json.Unmarshal(value, &text) == nil {
@@ -160,6 +176,13 @@ func archiveReadDirectoryMetadata(dir string) (map[string]string, error) {
 }
 
 func archiveReadMBMetadata(ctx context.Context, tx *sql.Tx) (map[string]string, error) {
+	var total int64
+	if err := tx.QueryRowContext(ctx, "SELECT coalesce(sum(coalesce(length(CAST(name AS BLOB)),0) + coalesce(length(CAST(value AS BLOB)),0)),0) FROM metadata").Scan(&total); err != nil {
+		return nil, fmt.Errorf("read MBTiles metadata size: %w", err)
+	}
+	if total > 16<<20 {
+		return nil, fmt.Errorf("MBTiles metadata exceeds 16 MiB")
+	}
 	rows, err := tx.QueryContext(ctx, "SELECT name,value FROM metadata")
 	if err != nil {
 		return nil, fmt.Errorf("read MBTiles metadata: %w", err)
@@ -174,6 +197,89 @@ func archiveReadMBMetadata(ctx context.Context, tx *sql.Tx) (map[string]string, 
 		metadata[key] = value
 	}
 	return metadata, rows.Err()
+}
+
+func archiveValidateMetadataSize(metadata map[string]string) error {
+	total := 0
+	for key, value := range metadata {
+		if len(key) > 16<<20-total || len(value) > 16<<20-total-len(key) {
+			return fmt.Errorf("MBTiles metadata exceeds 16 MiB")
+		}
+		total += len(key) + len(value)
+	}
+	return nil
+}
+
+// MBTiles requires vector layers inside its JSON metadata entry. Loose tile
+// sources may instead provide the same array as a top-level TileJSON property.
+func archiveNormalizeMBVectorMetadata(metadata map[string]string, minZoom, maxZoom int) error {
+	object := make(map[string]interface{})
+	if value := strings.TrimSpace(metadata["json"]); value != "" {
+		if err := json.Unmarshal([]byte(value), &object); err != nil || object == nil {
+			return fmt.Errorf("PBF MBTiles requires json metadata containing vector_layers")
+		}
+	}
+	if value := strings.TrimSpace(metadata["vector_layers"]); value != "" {
+		var layers interface{}
+		if err := json.Unmarshal([]byte(value), &layers); err != nil {
+			return fmt.Errorf("invalid vector_layers metadata: %w", err)
+		}
+		object["vector_layers"] = layers
+	}
+	if err := archiveValidateMBVectorMetadata(object, minZoom, maxZoom); err != nil {
+		return err
+	}
+	encoded, err := json.Marshal(object)
+	if err != nil {
+		return err
+	}
+	metadata["json"] = string(encoded)
+	delete(metadata, "vector_layers")
+	return nil
+}
+
+// MBTiles 1.3 restricts field types and layer zooms more tightly than the
+// general TileJSON schema. Clip broad source zoom ranges to the exported set.
+func archiveValidateMBVectorMetadata(metadata map[string]interface{}, minZoom, maxZoom int) error {
+	if err := archiveValidateVectorLayers(metadata["vector_layers"]); err != nil {
+		return err
+	}
+	for i, raw := range metadata["vector_layers"].([]interface{}) {
+		layer := raw.(map[string]interface{})
+		for name, value := range layer["fields"].(map[string]interface{}) {
+			switch value {
+			case "Number", "Boolean", "String":
+			default:
+				return fmt.Errorf("vector_layers[%d] field %q must use Number, Boolean or String", i, name)
+			}
+		}
+		low, high := float64(minZoom), float64(maxZoom)
+		for _, key := range []string{"minzoom", "maxzoom"} {
+			value, exists := layer[key]
+			if !exists {
+				continue
+			}
+			number, ok := value.(float64)
+			if !ok || math.IsNaN(number) || math.IsInf(number, 0) || number != math.Trunc(number) || number < 0 || number > 30 {
+				return fmt.Errorf("vector_layers[%d] has invalid %s", i, key)
+			}
+			if key == "minzoom" {
+				low = math.Max(low, number)
+			} else {
+				high = math.Min(high, number)
+			}
+		}
+		if low > high {
+			return fmt.Errorf("vector_layers[%d] zoom range does not overlap the exported tiles", i)
+		}
+		if _, exists := layer["minzoom"]; exists {
+			layer["minzoom"] = low
+		}
+		if _, exists := layer["maxzoom"]; exists {
+			layer["maxzoom"] = high
+		}
+	}
+	return nil
 }
 
 func archiveCompleteMetadata(metadata map[string]string, format, name string, extent archiveExtent) error {
@@ -203,9 +309,9 @@ func archiveCompleteMetadata(metadata map[string]string, format, name string, ex
 			bounds = parsed
 		}
 	}
-	metadata["bounds"] = fmt.Sprintf("%.7f,%.7f,%.7f,%.7f", bounds[0], bounds[1], bounds[2], bounds[3])
+	metadata["bounds"] = archiveBoundsText(bounds)
 	if metadata["center"] == "" {
-		metadata["center"] = fmt.Sprintf("%.7f,%.7f,%d", (bounds[0]+bounds[2])/2, (bounds[1]+bounds[3])/2, extent.minZ)
+		metadata["center"] = archiveBoundsText([]float64{(bounds[0] + bounds[2]) / 2, (bounds[1] + bounds[3]) / 2}) + "," + strconv.Itoa(extent.minZ)
 	} else {
 		center, err := archiveNumbers(metadata["center"], 3)
 		if err != nil {
@@ -217,24 +323,43 @@ func archiveCompleteMetadata(metadata map[string]string, format, name string, ex
 		if center[2] < float64(extent.minZ) || center[2] > float64(extent.maxZ) {
 			center[2] = float64(extent.minZ)
 		}
-		metadata["center"] = fmt.Sprintf("%.7f,%.7f,%.0f", center[0], center[1], center[2])
+		metadata["center"] = archiveBoundsText(center[:2]) + "," + strconv.Itoa(int(center[2]))
 	}
 	return nil
 }
 
+// Preserve coordinate precision in text metadata. Seven decimals remain the
+// minimum for compatibility, but narrow bounds must not be rounded inward.
+func archiveBoundsText(bounds []float64) string {
+	parts := make([]string, len(bounds))
+	for i, value := range bounds {
+		text := strconv.FormatFloat(value, 'f', -1, 64)
+		point := strings.IndexByte(text, '.')
+		if point < 0 {
+			text += ".0000000"
+		} else if decimals := len(text) - point - 1; decimals < 7 {
+			text += strings.Repeat("0", 7-decimals)
+		}
+		parts[i] = text
+	}
+	return strings.Join(parts, ",")
+}
+
 func archiveNumbers(text string, count int) ([]float64, error) {
 	if strings.HasPrefix(strings.TrimSpace(text), "[") {
-		var result []float64
-		if err := json.Unmarshal([]byte(text), &result); err != nil {
+		var values []*float64
+		if err := json.Unmarshal([]byte(text), &values); err != nil {
 			return nil, fmt.Errorf("invalid coordinate array: %w", err)
 		}
-		if len(result) != count {
+		if len(values) != count {
 			return nil, fmt.Errorf("expected %d coordinate values", count)
 		}
-		for _, value := range result {
-			if math.IsNaN(value) || math.IsInf(value, 0) {
+		result := make([]float64, count)
+		for i, value := range values {
+			if value == nil || math.IsNaN(*value) || math.IsInf(*value, 0) {
 				return nil, fmt.Errorf("coordinate values must be finite")
 			}
+			result[i] = *value
 		}
 		return result, nil
 	}
@@ -474,9 +599,15 @@ func archiveMBTilesToPMTiles(ctx context.Context, input, output, work, targetFor
 	if err != nil {
 		return result, err
 	}
+	if len(metadataBytes) > 16<<20 {
+		return result, fmt.Errorf("PMTiles metadata exceeds 16 MiB")
+	}
 	metadataBytes, err = archiveGzip(metadataBytes)
 	if err != nil {
 		return result, err
+	}
+	if len(metadataBytes) > 16<<20 {
+		return result, fmt.Errorf("compressed PMTiles metadata exceeds 16 MiB")
 	}
 	rootBytes := pm.SerializeEntries(rootEntries)
 	if len(rootBytes)+pm.HeaderV3LenBytes > rootArea {
@@ -506,10 +637,10 @@ func archiveMBTilesToPMTiles(ctx context.Context, input, output, work, targetFor
 	}
 	bounds, _ := archiveNumbers(metadata["bounds"], 4)
 	center, _ := archiveNumbers(metadata["center"], 3)
-	header.MinLonE7 = int32(math.Round(bounds[0] * 1e7))
-	header.MinLatE7 = int32(math.Round(bounds[1] * 1e7))
-	header.MaxLonE7 = int32(math.Round(bounds[2] * 1e7))
-	header.MaxLatE7 = int32(math.Round(bounds[3] * 1e7))
+	header.MinLonE7 = int32(math.Floor(bounds[0] * 1e7))
+	header.MinLatE7 = int32(math.Floor(bounds[1] * 1e7))
+	header.MaxLonE7 = int32(math.Ceil(bounds[2] * 1e7))
+	header.MaxLatE7 = int32(math.Ceil(bounds[3] * 1e7))
 	header.CenterLonE7 = int32(math.Round(center[0] * 1e7))
 	header.CenterLatE7 = int32(math.Round(center[1] * 1e7))
 	header.CenterZoom = uint8(center[2])
@@ -534,7 +665,7 @@ func archiveMBTilesToPMTiles(ctx context.Context, input, output, work, targetFor
 func archiveValidateVectorLayers(value interface{}) error {
 	layers, ok := value.([]interface{})
 	if !ok {
-		return fmt.Errorf("PBF PMTiles requires vector_layers metadata as a JSON array (provide it in metadata.json or the MBTiles metadata json entry)")
+		return fmt.Errorf("PBF archives require vector_layers metadata as a JSON array (provide it in metadata.json or the MBTiles metadata json entry)")
 	}
 	for i, value := range layers {
 		layer, ok := value.(map[string]interface{})
@@ -553,6 +684,23 @@ func archiveValidateVectorLayers(value interface{}) error {
 			if _, ok := field.(string); !ok {
 				return fmt.Errorf("vector_layers[%d] field %q must describe its type with a string", i, name)
 			}
+		}
+		low, high := 0.0, 30.0
+		for _, key := range []string{"minzoom", "maxzoom"} {
+			if value, exists := layer[key]; exists {
+				number, ok := value.(float64)
+				if !ok || math.IsNaN(number) || math.IsInf(number, 0) || number != math.Trunc(number) || number < 0 || number > 30 {
+					return fmt.Errorf("vector_layers[%d] has invalid %s", i, key)
+				}
+				if key == "minzoom" {
+					low = number
+				} else {
+					high = number
+				}
+			}
+		}
+		if low > high {
+			return fmt.Errorf("vector_layers[%d] has an inverted zoom range", i)
 		}
 	}
 	return nil

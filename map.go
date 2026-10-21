@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"strconv"
 	"strings"
 
@@ -35,15 +34,14 @@ func GetTileMapList() map[int]TileMap {
 	tml := make(map[int]TileMap)
 	var list = []string{"http://mt0.google.com/vt/lyrs=y&x={x}&y={y}&z={z}",
 		"http://tile.openstreetmap.org/{z}/{x}/{y}.png",
-		"http://api.mapbox.com/v4/mapbox.satellite/{z}/{x}/{y}.png?access_token=pk.eyJ1IjoiYWVyb3Zpc2lvbmtlc3RyZWwiLCJhIjoiY2l5bDhzYTVqMDAxNDJ3bGp1ZHA2cmtiaCJ9.8o3pqTWKiOV8RhjNGFW0rg",
+		"http://api.mapbox.com/v4/mapbox.satellite/{z}/{x}/{y}.png?access_token=YOUR_API_TOKEN",
 		// "http://mt0.google.cn/vt/lyrs=s&hl=zh-CN&x=214130&y=114212&z=18",
 		"http://mt0.google.cn/vt/lyrs=y&hl=zh-CN&x={x}&y={y}&z={z}",
 		"http://mt0.google.cn/vt/lyrs=s&x={x}&y={y}&z={z}",
-		"http://mt0.google.cn/vt/lyrs=y@258000000&hl=zh-CN&gl=CN&src=app&x=214130&y=114212&z=18&s=Ga", //m：路线图,t：地形图,p：带标签的地形图,s：卫星图,y：带标签的卫星图,h：标签层（路名、地名等）
+		"http://mt0.google.cn/vt/lyrs=y@258000000&hl=zh-CN&gl=CN&src=app&x={x}&y={y}&z={z}", //m：路线图,t：地形图,p：带标签的地形图,s：卫星图,y：带标签的卫星图,h：标签层（路名、地名等）
 	}
 	for i, v := range list {
-		fmt.Println(i, v)
-		m := TileMap{}
+		m := TileMap{ID: i, URL: v}
 		tml[i] = m
 	}
 	return tml

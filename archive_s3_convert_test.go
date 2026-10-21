@@ -67,6 +67,7 @@ func (store *archiveS3TestStore) serve(w http.ResponseWriter, r *http.Request) {
 		type item struct {
 			Key  string `xml:"Key"`
 			Size int    `xml:"Size"`
+			ETag string `xml:"ETag"`
 		}
 		response := struct {
 			XMLName xml.Name `xml:"ListBucketResult"`
@@ -78,7 +79,7 @@ func (store *archiveS3TestStore) serve(w http.ResponseWriter, r *http.Request) {
 			response.Next = strconv.Itoa(end)
 		}
 		for _, name := range keys[start:end] {
-			response.Items = append(response.Items, item{Key: strings.TrimPrefix(name, key+"/"), Size: len(store.objects[name].body)})
+			response.Items = append(response.Items, item{Key: strings.TrimPrefix(name, key+"/"), Size: len(store.objects[name].body), ETag: `"test-etag"`})
 		}
 		w.Header().Set("Content-Type", "application/xml")
 		xml.NewEncoder(w).Encode(response)
@@ -89,6 +90,10 @@ func (store *archiveS3TestStore) serve(w http.ResponseWriter, r *http.Request) {
 		object, ok := store.objects[key]
 		if !ok {
 			testS3Error(w, http.StatusNotFound, "NoSuchKey")
+			return
+		}
+		if match := r.Header.Get("If-Match"); match != "" && match != `"test-etag"` {
+			testS3Error(w, http.StatusPreconditionFailed, "PreconditionFailed")
 			return
 		}
 		w.Header().Set("Content-Length", strconv.Itoa(len(object.body)))

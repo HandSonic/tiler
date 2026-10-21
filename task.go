@@ -45,6 +45,7 @@ type Task struct {
 	timeDelay    int
 	bufSize      int
 	tileWG       sync.WaitGroup
+	saveWG       sync.WaitGroup
 	workers      chan maptile.Tile
 	savingpipe   chan Tile
 	tileSet      Set
@@ -68,18 +69,32 @@ type Task struct {
 	saved        atomic.Int64
 	skipped      atomic.Int64
 	failed       atomic.Int64
+	started      atomic.Bool
 	manifest     *FailureManifest
 	failurePath  string
 	repairTiles  map[int][]maptile.Tile
 	repairMode   bool
+	layerSources []string
+	sourceChecks map[int]map[maptile.Tile]string
+	sourceLast   map[int]int
+	sourceTiles  int
 }
 
 // NewTask 创建下载任务
 func NewTask(layers []Layer, m TileMap) *Task {
-	return newDownloadTask(layers, m, nil)
+	return NewTaskContext(context.Background(), layers, m)
+}
+
+// NewTaskContext also cancels tile counting when the caller stops the task.
+func NewTaskContext(parent context.Context, layers []Layer, m TileMap) *Task {
+	return newDownloadTaskContext(parent, layers, m, nil)
 }
 
 func newDownloadTask(layers []Layer, m TileMap, manifest *FailureManifest) *Task {
+	return newDownloadTaskContext(context.Background(), layers, m, manifest)
+}
+
+func newDownloadTaskContext(parent context.Context, layers []Layer, m TileMap, manifest *FailureManifest) *Task {
 	if len(layers) == 0 {
 		return nil
 	}
@@ -95,7 +110,11 @@ func newDownloadTask(layers []Layer, m TileMap, manifest *FailureManifest) *Task
 		TileMap: m,
 	}
 
-	task.ctx, task.cancel = context.WithCancel(context.Background())
+	task.ctx, task.cancel = context.WithCancel(parent)
+	if err := task.ctx.Err(); err != nil {
+		task.initErr = err
+		return &task
+	}
 	task.manifest = manifest
 	task.repairMode = manifest != nil
 	if task.manifest == nil {
@@ -113,7 +132,18 @@ func newDownloadTask(layers []Layer, m TileMap, manifest *FailureManifest) *Task
 			return &task
 		}
 		task.repairTiles = make(map[int][]maptile.Tile)
+		selectedSources := make(map[maptile.Tile]string)
 		for _, record := range records {
+			fingerprint, err := FailureSourceFingerprint(record.URL)
+			if err != nil {
+				task.initErr = err
+				return &task
+			}
+			if previous, exists := selectedSources[record.Tile]; exists && previous != fingerprint {
+				task.initErr = fmt.Errorf("repair manifest contains conflicting sources for the same tile; use separate outputs")
+				return &task
+			}
+			selectedSources[record.Tile] = fingerprint
 			for i, layer := range layers {
 				if layer.Zoom == int(record.Tile.Z) && layer.URL == record.URL {
 					task.repairTiles[i] = append(task.repairTiles[i], record.Tile)
@@ -128,12 +158,6 @@ func newDownloadTask(layers []Layer, m TileMap, manifest *FailureManifest) *Task
 			task.initErr = fmt.Errorf("layer zoom must be between 0 and 30")
 			return &task
 		}
-		if layers[i].Zoom < task.Min {
-			task.Min = layers[i].Zoom
-		}
-		if layers[i].Zoom > task.Max {
-			task.Max = layers[i].Zoom
-		}
 		if layers[i].URL == "" {
 			layers[i].URL = m.URL
 		}
@@ -144,7 +168,7 @@ func newDownloadTask(layers []Layer, m TileMap, manifest *FailureManifest) *Task
 		if task.repairMode {
 			layers[i].Count = int64(len(task.repairTiles[i]))
 		} else {
-			count, err := cover.Count(layers[i].Collection, maptile.Zoom(layers[i].Zoom))
+			count, err := cover.CountContext(task.ctx, layers[i].Collection, maptile.Zoom(layers[i].Zoom))
 			if err != nil {
 				task.initErr = err
 				return &task
@@ -152,11 +176,52 @@ func newDownloadTask(layers []Layer, m TileMap, manifest *FailureManifest) *Task
 			layers[i].Count = count
 		}
 		log.Printf("zoom: %d, tiles: %d \n", layers[i].Zoom, layers[i].Count)
+		if layers[i].Count > 0 {
+			if task.Total == 0 {
+				task.Min, task.Max = layers[i].Zoom, layers[i].Zoom
+			} else {
+				if layers[i].Zoom < task.Min {
+					task.Min = layers[i].Zoom
+				}
+				if layers[i].Zoom > task.Max {
+					task.Max = layers[i].Zoom
+				}
+			}
+		}
+		if layers[i].Count > math.MaxInt64-task.Total {
+			task.initErr = fmt.Errorf("selected tile count exceeds int64 capacity; split the download into smaller jobs")
+			return &task
+		}
 		task.Total += layers[i].Count
 	}
 	if task.Total == 0 && !task.repairMode {
 		task.initErr = fmt.Errorf("no tiles selected; check the layer GeoJSON and zoom levels")
 		return &task
+	}
+	task.layerSources = make([]string, len(layers))
+	sourcesByZoom := make(map[int]map[string]bool)
+	task.sourceLast = make(map[int]int)
+	task.sourceChecks = make(map[int]map[maptile.Tile]string)
+	for i, layer := range layers {
+		fingerprint, err := FailureSourceFingerprint(layer.URL)
+		if err != nil {
+			task.initErr = err
+			return &task
+		}
+		task.layerSources[i] = fingerprint
+		if layer.Count == 0 {
+			continue
+		}
+		if sourcesByZoom[layer.Zoom] == nil {
+			sourcesByZoom[layer.Zoom] = make(map[string]bool)
+		}
+		sourcesByZoom[layer.Zoom][fingerprint] = true
+		task.sourceLast[layer.Zoom] = i
+	}
+	for zoom, sources := range sourcesByZoom {
+		if len(sources) > 1 {
+			task.sourceChecks[zoom] = make(map[maptile.Tile]string)
+		}
 	}
 
 	task.workerCount = viper.GetInt("task.workers")
@@ -164,6 +229,14 @@ func newDownloadTask(layers []Layer, m TileMap, manifest *FailureManifest) *Task
 	task.timeDelay = viper.GetInt("task.timedelay")
 	if task.workerCount <= 0 || task.savePipeSize < 0 || task.timeDelay < 0 || viper.GetInt("task.mergebuf") < 0 {
 		task.initErr = fmt.Errorf("task.workers must be positive; savepipe, timedelay and mergebuf must be nonnegative")
+		return &task
+	}
+	if task.workerCount > 1024 || task.savePipeSize > 1024 {
+		task.initErr = fmt.Errorf("task.workers and task.savepipe must not exceed 1024")
+		return &task
+	}
+	if int64(task.timeDelay) > math.MaxInt64/int64(time.Millisecond) {
+		task.initErr = fmt.Errorf("task.timedelay exceeds the supported duration")
 		return &task
 	}
 	task.workers = make(chan maptile.Tile, task.workerCount)
@@ -188,6 +261,9 @@ func newDownloadTask(layers []Layer, m TileMap, manifest *FailureManifest) *Task
 	task.gzipPBF = task.outformat != "file"
 	if viper.IsSet("output.gzip_pbf") {
 		task.gzipPBF = viper.GetBool("output.gzip_pbf")
+	}
+	if task.outformat == "mbtiles" && strings.EqualFold(m.Format, PBF) && !task.gzipPBF {
+		task.initErr = fmt.Errorf("MBTiles PBF tiles require gzip encoding; output.gzip_pbf must be true")
 	}
 	return &task
 }
@@ -226,11 +302,11 @@ func (task *Task) MetaItems() map[string]string {
 		"attribution": `<a href="http://www.atlasdata.cn/" target="_blank">&copy; MapCloud</a>`,
 		"basename":    task.TileMap.Name,
 		"format":      task.TileMap.Format,
-		"type":        task.TileMap.Schema,
+		"type":        "baselayer",
 		"pixel_scale": strconv.Itoa(TileSize),
 		"version":     MBTileVersion,
-		"bounds":      fmt.Sprintf(`%f,%f,%f,%f`, b.Left(), b.Bottom(), b.Right(), b.Top()),
-		"center":      fmt.Sprintf(`%f,%f,%d`, c.X(), c.Y(), (task.Min+task.Max)/2),
+		"bounds":      fmt.Sprintf(`%s,%s,%s,%s`, formatDownloadCoordinate(b.Left()), formatDownloadCoordinate(b.Bottom()), formatDownloadCoordinate(b.Right()), formatDownloadCoordinate(b.Top())),
+		"center":      fmt.Sprintf(`%s,%s,%d`, formatDownloadCoordinate(c.X()), formatDownloadCoordinate(c.Y()), (task.Min+task.Max)/2),
 		"minzoom":     strconv.Itoa(task.Min),
 		"maxzoom":     strconv.Itoa(task.Max),
 		"json":        task.TileMap.JSON,
@@ -240,12 +316,21 @@ func (task *Task) MetaItems() map[string]string {
 
 // SetupMBTileTables 初始化配置MBTile库
 func (task *Task) SetupMBTileTables() error {
+	if task.initErr != nil {
+		return task.initErr
+	}
+	if err := task.ctx.Err(); err != nil {
+		return err
+	}
 	if task.File == "" {
 		file, err := task.outputPath()
 		if err != nil {
 			return err
 		}
 		task.File = file
+	}
+	if err := validateOutputFilePath(viper.GetString("output.directory"), task.File); err != nil {
+		return err
 	}
 	metadata := task.MetaItems()
 	if !task.repairMode {
@@ -267,10 +352,32 @@ func (task *Task) SetupMBTileTables() error {
 			return err
 		}
 	}
+	if task.repairMode && !existing {
+		return fmt.Errorf("repair target must be the original nonempty MBTiles database")
+	}
+	if !existing {
+		if err := validateDownloadMBMetadata(metadata); err != nil {
+			return err
+		}
+	}
+	if err := task.ctx.Err(); err != nil {
+		return err
+	}
+	if !task.resume {
+		if err := archiveCheckDestinationSidecars(task.File); err != nil {
+			return err
+		}
+	}
 	if err := os.MkdirAll(filepath.Dir(task.File), os.ModePerm); err != nil {
 		return err
 	}
 	if !task.resume {
+		if err := task.ctx.Err(); err != nil {
+			return err
+		}
+		if err := archiveCheckDestinationSidecars(task.File); err != nil {
+			return err
+		}
 		if err := os.Remove(task.File); err != nil && !os.IsNotExist(err) {
 			return err
 		}
@@ -287,15 +394,33 @@ func (task *Task) SetupMBTileTables() error {
 	}()
 	// Serializing reads and writes also prevents SQLite locking races in resume mode.
 	db.SetMaxOpenConns(1)
-	if existing && !task.repairMode {
+	if existing {
 		previous, err := readDownloadMBMetadata(db)
 		if err != nil {
 			return err
 		}
-		metadata, err = mergeDownloadMetadata(previous, metadata, false)
+		rows, err := db.Query("select zoom_level, tile_column, tile_row, tile_data from tiles limit 0")
 		if err != nil {
-			return err
+			return fmt.Errorf("read original MBTiles tiles table: %w", err)
 		}
+		rows.Close()
+		if task.repairMode {
+			if strings.ToLower(strings.TrimSpace(previous["format"])) != strings.ToLower(strings.TrimSpace(task.TileMap.Format)) {
+				return fmt.Errorf("repair target tile format differs from the failure manifest")
+			}
+			metadata = previous
+		} else {
+			metadata, err = mergeDownloadMetadata(previous, metadata, false)
+			if err != nil {
+				return err
+			}
+		}
+	}
+	if err := validateDownloadMBMetadata(metadata); err != nil {
+		return err
+	}
+	if err := task.ctx.Err(); err != nil {
+		return err
 	}
 	if err := optimizeConnection(db); err != nil {
 		return err
@@ -340,6 +465,7 @@ func (task *Task) savePipe() {
 			task.saved.Add(1)
 			task.resolveTileFailure(tile.T, tile.Source)
 		}
+		task.saveWG.Done()
 	}
 }
 
@@ -404,6 +530,7 @@ func (task *Task) tileFetcher(mt maptile.Tile, url string) {
 
 	//enable savingpipe
 	if task.outformat == "mbtiles" {
+		task.saveWG.Add(1)
 		task.savingpipe <- td
 	} else {
 		if err := task.saveTile(td); err != nil {
@@ -424,6 +551,11 @@ func (task *Task) downloadLayer(layer Layer, index int) {
 	bar.Start()
 	visit := func(tile maptile.Tile) error {
 		if err := task.waitUntilRunning(task.ctx); err != nil {
+			return err
+		}
+		if err := task.claimTileSource(tile, index); err != nil {
+			task.recordError(err)
+			task.Cancel()
 			return err
 		}
 		if task.resume && task.outformat == "file" {
@@ -484,7 +616,37 @@ func (task *Task) downloadLayer(layer Layer, index int) {
 		task.recordError(err)
 	}
 	task.tileWG.Wait()
+	// A following layer may resume overlapping coordinates. Verify only after
+	// the previous layer's SQLite writes have actually committed.
+	task.saveWG.Wait()
+	if task.sourceLast[layer.Zoom] == index {
+		task.sourceTiles -= len(task.sourceChecks[layer.Zoom])
+		delete(task.sourceChecks, layer.Zoom)
+	}
 	bar.FinishPrint(fmt.Sprintf("Task %s Zoom %d finished ~", task.ID, layer.Zoom))
+}
+
+func (task *Task) claimTileSource(tile maptile.Tile, layerIndex int) error {
+	sources := task.sourceChecks[int(tile.Z)]
+	if sources == nil {
+		return nil
+	}
+	current := task.layerSources[layerIndex]
+	if previous, exists := sources[tile]; exists {
+		if previous != current {
+			return fmt.Errorf("tile %d/%d/%d belongs to conflicting source layers; use separate outputs", tile.Z, tile.X, tile.Y)
+		}
+		return nil
+	}
+	// Only zooms combining distinct sources need this index. Bound it to keep
+	// a large mixed-source job from exhausting memory before finding overlap.
+	const maxSourceCheckTiles = 1000000
+	if task.sourceTiles >= maxSourceCheckTiles {
+		return fmt.Errorf("mixed-source layers exceed the %d-tile overlap check limit; split their source layers into separate jobs", maxSourceCheckTiles)
+	}
+	sources[tile] = current
+	task.sourceTiles++
+	return nil
 }
 
 // Download 开启下载任务
@@ -492,7 +654,13 @@ func (task *Task) Download() error {
 	if task.initErr != nil {
 		return task.initErr
 	}
+	if !task.started.CompareAndSwap(false, true) {
+		return fmt.Errorf("download task has already been started; create a new task to resume")
+	}
 	defer task.cancel()
+	if err := task.ctx.Err(); err != nil {
+		return err
+	}
 	if task.repairMode && task.Total == 0 {
 		return nil
 	}
@@ -529,6 +697,9 @@ func (task *Task) Download() error {
 	if err := task.setupFailureManifest(); err != nil {
 		return err
 	}
+	if err := task.ctx.Err(); err != nil {
+		return err
+	}
 	switch task.outformat {
 	case "mbtiles":
 		if err := task.SetupMBTileTables(); err != nil {
@@ -547,6 +718,9 @@ func (task *Task) Download() error {
 			}
 		}()
 	case "file":
+		if err := task.validateFileOutputSafety(); err != nil {
+			return err
+		}
 		if err := task.validateFileResumeMetadata(); err != nil {
 			return err
 		}

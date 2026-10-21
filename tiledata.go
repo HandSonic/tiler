@@ -3,7 +3,7 @@ package main
 import (
 	"bytes"
 	"compress/gzip"
-	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"image"
 	"image/color"
@@ -66,6 +66,15 @@ func prepareTileData(body []byte, format string, gzipPBF bool) ([]byte, error) {
 		if bytes.HasPrefix(body, []byte("\x89PNG\r\n\x1a\n")) || bytes.HasPrefix(body, []byte{0xff, 0xd8, 0xff}) || bytes.HasPrefix(body, []byte("GIF87a")) || bytes.HasPrefix(body, []byte("GIF89a")) || (len(body) >= 12 && string(body[:4]) == "RIFF" && string(body[8:12]) == "WEBP") {
 			return nil, fmt.Errorf("raster image data cannot be stored as PBF vector tiles")
 		}
+		text := bytes.TrimSpace(bytes.TrimPrefix(body, []byte{0xef, 0xbb, 0xbf}))
+		probe := text
+		if len(probe) > 512 {
+			probe = probe[:512]
+		}
+		lower := strings.ToLower(string(probe))
+		if json.Valid(text) || strings.HasPrefix(lower, "<html") || strings.HasPrefix(lower, "<!doctype html") || strings.HasPrefix(lower, "<?xml") || strings.HasPrefix(lower, "<error") {
+			return nil, fmt.Errorf("HTML, XML or JSON response cannot be stored as a PBF vector tile")
+		}
 		if !gzipPBF {
 			return body, nil
 		}
@@ -77,31 +86,30 @@ func prepareTileData(body []byte, format string, gzipPBF bool) ([]byte, error) {
 		if err := zw.Close(); err != nil {
 			return nil, fmt.Errorf("finish compressing PBF tile: %w", err)
 		}
+		if buf.Len() > maxTileDataBytes {
+			return nil, fmt.Errorf("encoded tile data exceeds the 64 MiB limit")
+		}
 		return buf.Bytes(), nil
 	case "webp":
-		// The standard library has no WebP encoder. Preserve WebP data rather
-		// than writing a different image format behind a .webp extension.
-		if len(body) < 20 || !bytes.Equal(body[:4], []byte("RIFF")) || !bytes.Equal(body[8:12], []byte("WEBP")) {
-			return nil, fmt.Errorf("source is not a WebP tile; WebP conversion is not supported")
-		}
-		if uint64(binary.LittleEndian.Uint32(body[4:8]))+8 != uint64(len(body)) {
-			return nil, fmt.Errorf("invalid WebP tile length")
-		}
-		switch string(body[12:16]) {
-		case "VP8 ", "VP8L", "VP8X":
-		default:
-			return nil, fmt.Errorf("invalid WebP tile chunk")
+		if _, err := decodeWebPTile(body); err != nil {
+			return nil, fmt.Errorf("decode WebP tile (encoding other images as WebP is not supported): %w", err)
 		}
 		return body, nil
 	case "png", "jpg", "jpeg":
-		config, _, err := image.DecodeConfig(bytes.NewReader(body))
+		config, configFormat, err := image.DecodeConfig(bytes.NewReader(body))
 		if err != nil {
 			return nil, fmt.Errorf("decode image tile header: %w", err)
 		}
 		if config.Width <= 0 || config.Height <= 0 || uint64(config.Width)*uint64(config.Height) > maxTilePixels {
 			return nil, fmt.Errorf("image tile exceeds the 16 megapixel limit")
 		}
-		img, sourceFormat, err := image.Decode(bytes.NewReader(body))
+		var img image.Image
+		sourceFormat := configFormat
+		if configFormat == "webp" {
+			img, err = decodeWebPTile(body)
+		} else {
+			img, sourceFormat, err = image.Decode(bytes.NewReader(body))
+		}
 		if err != nil {
 			return nil, fmt.Errorf("decode image tile: %w", err)
 		}
@@ -124,6 +132,9 @@ func prepareTileData(body []byte, format string, gzipPBF bool) ([]byte, error) {
 		}
 		if err != nil {
 			return nil, fmt.Errorf("encode %s tile: %w", format, err)
+		}
+		if buf.Len() > maxTileDataBytes {
+			return nil, fmt.Errorf("encoded tile data exceeds the 64 MiB limit")
 		}
 		return buf.Bytes(), nil
 	default:

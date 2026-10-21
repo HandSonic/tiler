@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -51,15 +53,21 @@ func convertLocalArchive(ctx context.Context, input, output string, opts Archive
 	if err != nil {
 		return result, err
 	}
+	resolvedInput, err := archiveResolvedPath(inputAbs)
+	if err != nil {
+		return result, fmt.Errorf("resolve archive input: %w", err)
+	}
+	resolvedDestination, err := archiveResolvedPath(destination)
+	if err != nil {
+		return result, fmt.Errorf("resolve archive destination: %w", err)
+	}
 	if info.IsDir() {
-		rel, e := filepath.Rel(inputAbs, destination)
-		if e == nil && (rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))) {
+		if archivePathContains(resolvedInput, resolvedDestination) {
 			return result, fmt.Errorf("output cannot be inside the input tile directory")
 		}
 	}
 	if kind == "file" {
-		rel, e := filepath.Rel(destination, inputAbs)
-		if e == nil && (rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))) {
+		if archivePathContains(resolvedDestination, resolvedInput) {
 			return result, fmt.Errorf("output tile directory cannot contain the input path")
 		}
 	}
@@ -78,8 +86,8 @@ func convertLocalArchive(ctx context.Context, input, output string, opts Archive
 	} else if !os.IsNotExist(statErr) {
 		return result, statErr
 	}
-	if existing && kind == "mbtiles" {
-		if err := archiveCheckDestinationSidecars(destination); err != nil {
+	if existing && kind != "file" {
+		if err := archiveCheckArchiveDestination(destination, kind); err != nil {
 			return result, err
 		}
 	}
@@ -259,6 +267,14 @@ func convertLocalArchive(ctx context.Context, input, output string, opts Archive
 	if err := archiveCompleteMetadata(metadata, targetFormat, strings.TrimSuffix(filepath.Base(inputAbs), filepath.Ext(inputAbs)), extent); err != nil {
 		return result, err
 	}
+	if kind == "mbtiles" && targetFormat == PBF && !opts.allowMissingVectorMetadata {
+		if err := archiveNormalizeMBVectorMetadata(metadata, extent.minZ, extent.maxZ); err != nil {
+			return result, err
+		}
+	}
+	if err := archiveValidateMetadataSize(metadata); err != nil {
+		return result, err
+	}
 	for key, value := range metadata {
 		if _, err := tx.ExecContext(ctx, "INSERT INTO metadata(name,value) VALUES(?,?)", key, value); err != nil {
 			return result, err
@@ -300,10 +316,8 @@ func convertLocalArchive(ctx context.Context, input, output string, opts Archive
 		return result, err
 	}
 	if opts.Overwrite || (opts.Append && existing) {
-		if kind == "mbtiles" {
-			if err := archiveCheckDestinationSidecars(destination); err != nil {
-				return result, err
-			}
+		if err := archiveCheckArchiveDestination(destination, kind); err != nil {
+			return result, err
 		}
 		err = os.Rename(staged, destination)
 	} else {
@@ -313,6 +327,61 @@ func convertLocalArchive(ctx context.Context, input, output string, opts Archive
 		return result, fmt.Errorf("publish archive: %w", err)
 	}
 	return result, nil
+}
+
+// Resolve existing ancestors as well as the final path: an output reached
+// through a parent directory symlink must not evade input/output overlap checks.
+func archiveResolvedPath(path string) (string, error) {
+	var suffix []string
+	for {
+		resolved, err := filepath.EvalSymlinks(path)
+		if err == nil {
+			for i := len(suffix) - 1; i >= 0; i-- {
+				resolved = filepath.Join(resolved, suffix[i])
+			}
+			return filepath.Clean(resolved), nil
+		}
+		if !os.IsNotExist(err) {
+			return "", err
+		}
+		parent := filepath.Dir(path)
+		if parent == path {
+			return "", err
+		}
+		suffix = append(suffix, filepath.Base(path))
+		path = parent
+	}
+}
+
+func archivePathContains(parent, child string) bool {
+	relative, err := filepath.Rel(parent, child)
+	return err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
+}
+
+func archiveCheckArchiveDestination(destination, kind string) error {
+	if kind == "mbtiles" {
+		return archiveCheckDestinationSidecars(destination)
+	}
+	file, err := os.Open(destination)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var header [16]byte
+	n, readErr := io.ReadFull(file, header[:])
+	closeErr := file.Close()
+	if readErr != nil && readErr != io.EOF && readErr != io.ErrUnexpectedEOF {
+		return readErr
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	if bytes.HasPrefix(header[:n], []byte("SQLite format 3\x00")) {
+		return archiveCheckDestinationSidecars(destination)
+	}
+	return nil
 }
 
 // Replacing a database while its live WAL or rollback journal remains beside
@@ -326,6 +395,19 @@ func archiveCheckDestinationSidecars(destination string) error {
 		if err != nil {
 			return err
 		}
+		if info.Mode().IsRegular() && info.Size() > 0 && suffix == "-journal" {
+			file, err := os.Open(destination + suffix)
+			if err != nil {
+				return err
+			}
+			var header [8]byte
+			_, readErr := io.ReadFull(file, header[:])
+			closeErr := file.Close()
+			// PERSIST mode retains the committed journal with a zeroed header.
+			if readErr == nil && closeErr == nil && header == [8]byte{} {
+				continue
+			}
+		}
 		if !info.Mode().IsRegular() || info.Size() > 0 {
 			return fmt.Errorf("MBTiles destination has an active %s sidecar; close SQLite writers and checkpoint the database before replacing or appending", suffix)
 		}
@@ -337,6 +419,10 @@ func archiveOutputKind(output, requested string) (string, error) {
 	kind := strings.ToLower(strings.TrimSpace(requested))
 	if kind != "" {
 		if kind == "file" || kind == "mbtiles" || kind == "pmtiles" {
+			extension := strings.ToLower(filepath.Ext(output))
+			if kind != "file" && (extension == ".mbtiles" || extension == ".pmtiles") && extension != "."+kind {
+				return "", fmt.Errorf("output type %s conflicts with the %s filename extension", kind, extension)
+			}
 			return kind, nil
 		}
 		return "", fmt.Errorf("output type must be file, mbtiles or pmtiles")
@@ -380,7 +466,29 @@ func archiveWalkLocal(ctx context.Context, input, pattern string, visit archiveV
 	case ".pmtiles":
 		return archiveWalkPM(ctx, input, visit)
 	default:
-		return nil, fmt.Errorf("input must be a tile directory, .mbtiles or .pmtiles")
+		// Explicit output types permit arbitrary filenames. Recognize those
+		// archives by their signatures so the output can be converted again.
+		file, err := os.Open(input)
+		if err != nil {
+			return nil, err
+		}
+		var header [16]byte
+		n, readErr := io.ReadFull(file, header[:])
+		closeErr := file.Close()
+		if readErr != nil && readErr != io.EOF && readErr != io.ErrUnexpectedEOF {
+			return nil, readErr
+		}
+		if closeErr != nil {
+			return nil, closeErr
+		}
+		switch {
+		case bytes.HasPrefix(header[:n], []byte("SQLite format 3\x00")):
+			return archiveWalkMB(ctx, input, visit)
+		case bytes.HasPrefix(header[:n], []byte("PMTiles")):
+			return archiveWalkPM(ctx, input, visit)
+		default:
+			return nil, fmt.Errorf("input must be a tile directory, MBTiles or PMTiles archive")
+		}
 	}
 }
 
@@ -518,10 +626,39 @@ func archiveWalkMB(ctx context.Context, input string, visit archiveVisit) (map[s
 }
 
 func archiveExportFiles(ctx context.Context, input, output, pattern string, appendExisting bool) error {
+	// Serialize and validate metadata before writing any append tiles. JSON
+	// escaping can make otherwise small SQL metadata exceed the reader's limit.
+	db, err := archiveOpenSQLite(input, true)
+	if err != nil {
+		return err
+	}
+	tx, err := db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		db.Close()
+		return err
+	}
+	metadata, err := archiveReadMBMetadata(ctx, tx)
+	tx.Rollback()
+	db.Close()
+	if err != nil {
+		return err
+	}
+	metadata["tile_path"] = pattern
+	metadata["scheme"] = "xyz"
+	if strings.Contains(pattern, "{-y}") {
+		metadata["scheme"] = "tms"
+	}
+	data, err := json.MarshalIndent(metadata, "", "  ")
+	if err != nil {
+		return err
+	}
+	if len(data)+1 > 16<<20 {
+		return fmt.Errorf("output metadata.json exceeds 16 MiB")
+	}
 	if err := os.MkdirAll(output, 0755); err != nil {
 		return err
 	}
-	metadata, err := archiveWalkMB(ctx, input, func(z int, x, y uint32, body []byte, format string) error {
+	_, err = archiveWalkMB(ctx, input, func(z int, x, y uint32, body []byte, format string) error {
 		relative, err := renderTilePath(pattern, maptile.Tile{Z: maptile.Zoom(z), X: x, Y: y}, format)
 		if err != nil {
 			return err
@@ -551,15 +688,6 @@ func archiveExportFiles(ctx context.Context, input, output, pattern string, appe
 		}
 		return archiveWriteFileAtomic(destination, body)
 	})
-	if err != nil {
-		return err
-	}
-	metadata["tile_path"] = pattern
-	metadata["scheme"] = "xyz"
-	if strings.Contains(pattern, "{-y}") {
-		metadata["scheme"] = "tms"
-	}
-	data, err := json.MarshalIndent(metadata, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -639,7 +767,7 @@ func archiveUnionMetadataBounds(metadata map[string]string, extent archiveExtent
 			bounds[3] = old[3]
 		}
 	}
-	metadata["bounds"] = fmt.Sprintf("%.7f,%.7f,%.7f,%.7f", bounds[0], bounds[1], bounds[2], bounds[3])
+	metadata["bounds"] = archiveBoundsText(bounds)
 }
 
 func archiveMergeMetadata(existing, incoming map[string]string) (map[string]string, error) {
@@ -666,7 +794,7 @@ func archiveMergeMetadata(existing, incoming map[string]string) (map[string]stri
 			if b[3] > a[3] {
 				a[3] = b[3]
 			}
-			result["bounds"] = fmt.Sprintf("%.7f,%.7f,%.7f,%.7f", a[0], a[1], a[2], a[3])
+			result["bounds"] = archiveBoundsText(a)
 		}
 	}
 	// Merge vector layer descriptions from both regions instead of losing layers
@@ -678,6 +806,9 @@ func archiveMergeMetadata(existing, incoming map[string]string) (map[string]stri
 		if metadata["json"] != "" {
 			if err := json.Unmarshal([]byte(metadata["json"]), &object); err != nil {
 				return nil, fmt.Errorf("invalid JSON metadata: %w", err)
+			}
+			if object == nil {
+				return nil, fmt.Errorf("metadata json must be an object")
 			}
 		}
 		if text := metadata["vector_layers"]; text != "" {
@@ -705,7 +836,11 @@ func archiveMergeMetadata(existing, incoming map[string]string) (map[string]stri
 					for _, key := range []string{"minzoom", "maxzoom"} {
 						a, aok := previous[key].(float64)
 						b, bok := layer[key].(float64)
-						if bok && (!aok || (key == "minzoom" && b < a) || (key == "maxzoom" && b > a)) {
+						if !aok || !bok {
+							// An omitted limit covers the source dataset's full
+							// range; the bounded region must not narrow that range.
+							delete(previous, key)
+						} else if (key == "minzoom" && b < a) || (key == "maxzoom" && b > a) {
 							previous[key] = b
 						}
 					}
