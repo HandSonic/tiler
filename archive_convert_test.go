@@ -66,7 +66,7 @@ func archiveTestReadPM(t *testing.T, path string) (pm.HeaderV3, map[uint64][]byt
 	if header.RootOffset+header.RootLength > 16384 {
 		t.Fatal("root does not fit first 16KiB")
 	}
-	root, err := pm.DeserializeEntries(body[header.RootOffset : header.RootOffset+header.RootLength])
+	root, _, err := archiveReadPMDirectory(body[header.RootOffset:header.RootOffset+header.RootLength], header.InternalCompression, 64<<20, 1<<20)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,7 +76,7 @@ func archiveTestReadPM(t *testing.T, path string) (pm.HeaderV3, map[uint64][]byt
 			all = append(all, entry)
 			continue
 		}
-		leaf, err := pm.DeserializeEntries(body[header.LeafDirectoryOffset+entry.Offset : header.LeafDirectoryOffset+entry.Offset+uint64(entry.Length)])
+		leaf, _, err := archiveReadPMDirectory(body[header.LeafDirectoryOffset+entry.Offset:header.LeafDirectoryOffset+entry.Offset+uint64(entry.Length)], header.InternalCompression, 64<<20, 1<<20)
 		if err != nil {
 			t.Fatal(err)
 		}

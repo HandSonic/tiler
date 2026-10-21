@@ -312,6 +312,8 @@ func TestAuditDisjointSourceLayersRemainValidAndReleaseTheirIndex(t *testing.T) 
 	layers := []Layer{
 		{Zoom: 1, URL: server.URL + "/first/{z}/{x}/{y}", Collection: orb.Collection{orb.Point{-90, 45}}},
 		{Zoom: 1, URL: server.URL + "/second/{z}/{x}/{y}", Collection: orb.Collection{orb.Point{90, -45}}},
+		// Repeating the first source is allowed even with a different layer index.
+		{Zoom: 1, URL: server.URL + "/first/{z}/{x}/{y}", Collection: orb.Collection{orb.Point{-90, 45}}},
 		{Zoom: 1, URL: server.URL + "/empty/{z}/{x}/{y}"},
 	}
 	task := NewTask(layers, TileMap{Name: "disjoint", Format: PNG})
@@ -319,7 +321,7 @@ func TestAuditDisjointSourceLayersRemainValidAndReleaseTheirIndex(t *testing.T) 
 	if err := task.Download(); err != nil {
 		t.Fatal(err)
 	}
-	if requests.Load() != 2 || task.sourceTiles != 0 || len(task.sourceChecks) != 0 {
+	if requests.Load() != 3 || task.sourceTiles != 0 || len(task.sourceChecks) != 0 {
 		t.Fatalf("disjoint source output/index requests=%d tracked=%d zooms=%d", requests.Load(), task.sourceTiles, len(task.sourceChecks))
 	}
 }

@@ -36,6 +36,9 @@ func TestSaveFileMetadata(t *testing.T) {
 	if err := json.Unmarshal(data, &got); err != nil {
 		t.Fatal(err)
 	}
+	if _, exists := got["version"]; exists {
+		t.Error("download metadata invented an unspecified dataset version")
+	}
 	want := task.MetaItems()
 	want["tile_path"] = defaultTilePath
 	want["scheme"] = "xyz"
@@ -152,5 +155,23 @@ func assertNoMetadataTemps(t *testing.T, dir string) {
 	files, err := filepath.Glob(filepath.Join(dir, ".metadata-*"))
 	if err != nil || len(files) != 0 {
 		t.Fatalf("metadata temporary files remain: %v, %v", files, err)
+	}
+}
+
+func TestArchiveMetadataPreservesOnlyProvidedVersion(t *testing.T) {
+	var extent archiveExtent
+	extent.add(0, 0, 0)
+	for _, version := range []string{"", "2026.10.21"} {
+		metadata := map[string]string{}
+		if version != "" {
+			metadata["version"] = version
+		}
+		if err := archiveCompleteMetadata(metadata, PNG, "map", extent); err != nil {
+			t.Fatal(err)
+		}
+		got, exists := metadata["version"]
+		if got != version || exists != (version != "") {
+			t.Errorf("dataset version = %q (present %t); provided %q", got, exists, version)
+		}
 	}
 }

@@ -254,12 +254,8 @@ func archiveS3Download(ctx context.Context, out *s3Output, key, filename string)
 }
 
 func archiveS3ReadObject(ctx context.Context, out *s3Output, key string, limit int64) ([]byte, error) {
-	body, _, err := archiveS3ReadObjectInfo(ctx, out, key, limit)
+	body, _, err := archiveS3ReadObjectVersion(ctx, out, key, limit, "")
 	return body, err
-}
-
-func archiveS3ReadObjectInfo(ctx context.Context, out *s3Output, key string, limit int64) ([]byte, map[string]string, error) {
-	return archiveS3ReadObjectVersion(ctx, out, key, limit, "")
 }
 
 func archiveS3ReadObjectVersion(ctx context.Context, out *s3Output, key string, limit int64, expectedETag string) ([]byte, map[string]string, error) {
@@ -539,7 +535,7 @@ func archiveS3ConvertToObject(ctx context.Context, out *s3Output, input string, 
 		return result, err
 	}
 	uploader := manager.NewUploader(out.client, func(u *manager.Uploader) {
-		u.PartSize, u.Concurrency, u.LeavePartsOnError = 8<<20, 3, true
+		u.PartSize, u.Concurrency, u.LeavePartsOnError = defaultArchivePartSize, defaultArchiveConcurrency, true
 	})
 	upload := archiveUploadFile{ArchiveUploadObject: ArchiveUploadObject{Path: filename, Key: destination.key, Size: info.Size()}, info: info}
 	if err := uploadArchiveFile(ctx, out, uploader, upload, time.Hour); err != nil {

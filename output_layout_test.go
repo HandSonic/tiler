@@ -144,7 +144,7 @@ func TestS3TileLayoutHeadUsesSameKeyAndChecksIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	tile := maptile.Tile{Z: 2, X: 3, Y: 1}
-	if err := out.save(Tile{T: tile, C: []byte("tile")}, PNG); err != nil {
+	if err := out.saveContext(context.Background(), Tile{T: tile, C: []byte("tile")}, PNG); err != nil {
 		t.Fatal(err)
 	}
 	if exists, err := out.exists(context.Background(), tile, PNG); err != nil || !exists {

@@ -67,19 +67,6 @@ func TestHeaderV3KnownLayoutAndRoundTrip(t *testing.T) {
 	}
 }
 
-func compressedDirectory(t *testing.T, raw []byte) []byte {
-	t.Helper()
-	var buffer bytes.Buffer
-	w := gzip.NewWriter(&buffer)
-	if _, err := w.Write(raw); err != nil {
-		t.Fatal(err)
-	}
-	if err := w.Close(); err != nil {
-		t.Fatal(err)
-	}
-	return buffer.Bytes()
-}
-
 func TestDirectoryMatchesSpecVarintsAndRoundTrips(t *testing.T) {
 	entries := []EntryV3{{1, 0, 10, 1}, {3, 10, 12, 1}, {9, 99, 7, 0}}
 	encoded := SerializeEntries(entries)
@@ -98,48 +85,33 @@ func TestDirectoryMatchesSpecVarintsAndRoundTrips(t *testing.T) {
 	if !bytes.Equal(raw, want) {
 		t.Fatalf("directory varints=%v want %v", raw, want)
 	}
-	for _, source := range []struct {
-		name   string
-		data   []byte
-		decode func([]byte) ([]EntryV3, error)
-	}{
-		{"gzip", encoded, DeserializeEntries},
-		{"uncompressed", raw, DeserializeEntriesRaw},
-	} {
-		t.Run(source.name, func(t *testing.T) {
-			got, err := source.decode(source.data)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !reflect.DeepEqual(got, entries) {
-				t.Fatalf("directory=%+v want %+v", got, entries)
-			}
-		})
+	got, err := DeserializeEntriesRaw(raw)
+	if err != nil {
+		t.Fatal(err)
 	}
-	empty, err := DeserializeEntries(SerializeEntries(nil))
+	if !reflect.DeepEqual(got, entries) {
+		t.Fatalf("directory=%+v want %+v", got, entries)
+	}
+	empty, err := DeserializeEntriesRaw([]byte{0})
 	if err != nil || len(empty) != 0 {
 		t.Fatalf("empty directory: %+v %v", empty, err)
 	}
+
 }
 
 func TestDirectoryRejectsMalformedInput(t *testing.T) {
 	cases := map[string][]byte{
-		"empty": nil, "not gzip": []byte("directory"),
-		"count allocation":       compressedDirectory(t, []byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f}),
-		"truncated fields":       compressedDirectory(t, []byte{1, 0, 1, 10}),
-		"duplicate IDs":          compressedDirectory(t, []byte{2, 0, 0, 1, 1, 10, 10, 1, 0}),
-		"first offset zero":      compressedDirectory(t, []byte{1, 0, 1, 10, 0}),
-		"empty tile":             compressedDirectory(t, []byte{1, 0, 1, 0, 1}),
-		"trailing decoded bytes": compressedDirectory(t, []byte{0, 0}),
+		"empty": nil, "invalid directory": []byte("directory"),
+		"count allocation":       {0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f},
+		"truncated fields":       {1, 0, 1, 10},
+		"duplicate IDs":          {2, 0, 0, 1, 1, 10, 10, 1, 0},
+		"first offset zero":      {1, 0, 1, 10, 0},
+		"empty tile":             {1, 0, 1, 0, 1},
+		"trailing decoded bytes": {0, 0},
 	}
-	valid := SerializeEntries([]EntryV3{{0, 0, 10, 1}})
-	crc := append([]byte{}, valid...)
-	crc[len(crc)-8] ^= 1
-	cases["bad gzip CRC"] = crc
-	cases["trailing gzip"] = append(append([]byte{}, valid...), valid...)
 	for name, data := range cases {
 		t.Run(name, func(t *testing.T) {
-			if _, err := DeserializeEntries(data); err == nil {
+			if _, err := DeserializeEntriesRaw(data); err == nil {
 				t.Fatal("accepted malformed directory")
 			}
 		})

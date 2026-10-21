@@ -2,10 +2,8 @@ package pmtiles
 
 import (
 	"bytes"
-	"compress/gzip"
 	"encoding/binary"
 	"fmt"
-	"io"
 	"math"
 )
 
@@ -48,36 +46,8 @@ func DeserializeHeader(data []byte) (HeaderV3, error) {
 	return h, nil
 }
 
-// DeserializeEntries reads one gzip directory with bounded allocation and
-// validates varints, ascending IDs, field widths, offsets, gzip integrity and
-// trailing data. It is suitable for inspecting the directories we generate.
-func DeserializeEntries(data []byte) ([]EntryV3, error) {
-	raw := bytes.NewReader(data)
-	reader, err := gzip.NewReader(raw)
-	if err != nil {
-		return nil, fmt.Errorf("read PMTiles gzip directory: %w", err)
-	}
-	reader.Multistream(false)
-	decoded, err := io.ReadAll(io.LimitReader(reader, maxDirectoryDecodedBytes+1))
-	closeErr := reader.Close()
-	if err != nil {
-		return nil, fmt.Errorf("decode PMTiles directory: %w", err)
-	}
-	if closeErr != nil {
-		return nil, fmt.Errorf("close PMTiles directory: %w", closeErr)
-	}
-	if len(decoded) > maxDirectoryDecodedBytes {
-		return nil, fmt.Errorf("PMTiles directory exceeds %d decoded bytes", maxDirectoryDecodedBytes)
-	}
-	if raw.Len() != 0 {
-		return nil, fmt.Errorf("trailing gzip data in PMTiles directory")
-	}
-	return DeserializeEntriesRaw(decoded)
-}
-
-// DeserializeEntriesRaw validates an already decompressed PMTiles directory.
-// It shares the same allocation and field validation as DeserializeEntries,
-// without making uncompressed callers encode and decode a gzip wrapper.
+// DeserializeEntriesRaw validates an already decompressed PMTiles directory
+// before allocating its entries.
 func DeserializeEntriesRaw(decoded []byte) ([]EntryV3, error) {
 	if len(decoded) > maxDirectoryDecodedBytes {
 		return nil, fmt.Errorf("PMTiles directory exceeds %d decoded bytes", maxDirectoryDecodedBytes)

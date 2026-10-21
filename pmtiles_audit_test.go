@@ -69,3 +69,28 @@ func TestPMAuditRejectsUnreachableLeafTiles(t *testing.T) {
 		t.Fatalf("leaf run crossed its parent directory boundary: %v", err)
 	}
 }
+
+// Gzip integrity belongs to the actual archive reader, not a codec API that
+// only tests call. The raw codec separately validates directory fields.
+func TestPMAuditDirectoryGzipIntegrity(t *testing.T) {
+	valid := pm.SerializeEntries([]pm.EntryV3{{TileId: 0, Offset: 0, Length: 10, RunLength: 1}})
+	entries, _, err := archiveReadPMDirectory(valid, pm.Gzip, 64<<20, 1<<20)
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("valid directory rejected: %v", err)
+	}
+	crc := append([]byte(nil), valid...)
+	crc[len(crc)-8] ^= 1
+	for name, data := range map[string][]byte{
+		"empty":          nil,
+		"not gzip":       []byte("directory"),
+		"bad CRC":        crc,
+		"truncated gzip": valid[:len(valid)-3],
+		"trailing gzip":  append(append([]byte(nil), valid...), valid...),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, _, err := archiveReadPMDirectory(data, pm.Gzip, 64<<20, 1<<20); err == nil {
+				t.Fatal("accepted malformed gzip directory")
+			}
+		})
+	}
+}

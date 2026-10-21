@@ -125,13 +125,7 @@ func validateGeometryDepth(ctx context.Context, geometry orb.Geometry, depth int
 
 // CountContext can be canceled even while preparing polygon boundaries. It
 // adds interior scanline lengths instead of iterating through every tile.
-func CountContext(ctx context.Context, collection orb.Collection, zoom maptile.Zoom) (count int64, err error) {
-	defer func() {
-		if failure := recover(); failure != nil {
-			count = 0
-			err = fmt.Errorf("count tile coverage: %v", failure)
-		}
-	}()
+func CountContext(ctx context.Context, collection orb.Collection, zoom maptile.Zoom) (int64, error) {
 	if ctx == nil {
 		return 0, fmt.Errorf("coverage context is required")
 	}

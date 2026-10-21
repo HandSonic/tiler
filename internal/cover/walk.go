@@ -20,12 +20,7 @@ func Count(collection orb.Collection, zoom maptile.Zoom) (int64, error) {
 // Walk synchronously visits the covering tiles without creating a producer
 // goroutine. It stops on cancellation, a visitor error, or malformed geometry.
 // The scanline mathematics is retained from the original streaming algorithm.
-func Walk(ctx context.Context, collection orb.Collection, zoom maptile.Zoom, visit func(maptile.Tile) error) (err error) {
-	defer func() {
-		if failure := recover(); failure != nil {
-			err = fmt.Errorf("walk tile coverage: %v", failure)
-		}
-	}()
+func Walk(ctx context.Context, collection orb.Collection, zoom maptile.Zoom, visit func(maptile.Tile) error) error {
 	if zoom > 30 {
 		return fmt.Errorf("tile zoom %d is outside 0..30", zoom)
 	}

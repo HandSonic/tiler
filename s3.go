@@ -91,10 +91,6 @@ func newS3OutputForBucket(ctx context.Context, bucket string) (*s3Output, error)
 	}, nil
 }
 
-func (out *s3Output) save(tile Tile, format string) error {
-	return out.saveContext(context.Background(), tile, format)
-}
-
 func (out *s3Output) saveContext(parent context.Context, tile Tile, format string) error {
 	key, err := out.tileKey(tile.T, format)
 	if err != nil {

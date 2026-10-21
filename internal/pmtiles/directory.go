@@ -60,51 +60,6 @@ type HeaderV3 struct {
 	CenterLatE7         int32
 }
 
-func headerContentType(header HeaderV3) (string, bool) {
-	switch header.TileType {
-	case Mvt:
-		return "application/x-protobuf", true
-	case Png:
-		return "image/png", true
-	case Jpeg:
-		return "image/jpeg", true
-	case Webp:
-		return "image/webp", true
-	case Avif:
-		return "image/avif", true
-	default:
-		return "", false
-	}
-}
-
-func headerExt(header HeaderV3) string {
-	switch header.TileType {
-	case Mvt:
-		return ".mvt"
-	case Png:
-		return ".png"
-	case Jpeg:
-		return ".jpg"
-	case Webp:
-		return ".webp"
-	case Avif:
-		return ".avif"
-	default:
-		return ""
-	}
-}
-
-func headerContentEncoding(compression Compression) (string, bool) {
-	switch compression {
-	case Gzip:
-		return "gzip", true
-	case Brotli:
-		return "br", true
-	default:
-		return "", false
-	}
-}
-
 type EntryV3 struct {
 	TileId    uint64
 	Offset    uint64

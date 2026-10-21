@@ -136,8 +136,8 @@ func runUploadCLI(args []string, stdout, stderr io.Writer) error {
 	fs.SetOutput(stderr)
 	config := fs.String("c", "conf.toml", "configuration file containing output.s3")
 	timeout := fs.Duration("timeout", time.Hour, "total timeout per archive, including retries")
-	partMiB := fs.Int64("part-size-mib", 8, "multipart upload part size in MiB (at least 5)")
-	concurrency := fs.Int("concurrency", 3, "parallel parts per archive")
+	partMiB := fs.Int64("part-size-mib", defaultArchivePartSize>>20, "multipart upload part size in MiB (at least 5)")
+	concurrency := fs.Int("concurrency", defaultArchiveConcurrency, "parallel parts per archive")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -147,8 +147,8 @@ func runUploadCLI(args []string, stdout, stderr io.Writer) error {
 	if *partMiB < 5 || *partMiB > (1<<63-1)/(1024*1024) {
 		return fmt.Errorf("part-size-mib must be at least 5 and fit a 64-bit byte size")
 	}
-	if *timeout <= 0 || *concurrency < 1 || *concurrency > 32 {
-		return fmt.Errorf("timeout must be positive and concurrency must be between 1 and 32")
+	if *timeout <= 0 || *concurrency < 1 || *concurrency > maxArchiveConcurrency {
+		return fmt.Errorf("timeout must be positive and concurrency must be between 1 and %d", maxArchiveConcurrency)
 	}
 	if err := initConf(*config); err != nil {
 		return err

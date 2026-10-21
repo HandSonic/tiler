@@ -16,6 +16,12 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
+// Shared project defaults for CLI uploads and converted S3 archives. These
+// tune transfer concurrency, not S3 format constraints or a heap guarantee.
+const defaultArchivePartSize = 8 << 20
+const defaultArchiveConcurrency = 3
+const maxArchiveConcurrency = 32
+
 // ArchiveUploadOptions controls each archive upload. Zero values select a
 // one-hour deadline, 8 MiB initial parts, and three concurrent part requests.
 // The SDK increases the part size for large seekable files when necessary.
@@ -69,7 +75,7 @@ func UploadArchives(ctx context.Context, out *s3Output, inputs []string, opts Ar
 		return result, fmt.Errorf("archive upload timeout must be positive")
 	}
 	if opts.PartSize == 0 {
-		opts.PartSize = 8 * 1024 * 1024
+		opts.PartSize = defaultArchivePartSize
 	}
 	maxPartSize := int64(5) * 1024 * 1024 * 1024
 	maxInt := int64(^uint(0) >> 1)
@@ -80,10 +86,10 @@ func UploadArchives(ctx context.Context, out *s3Output, inputs []string, opts Ar
 		return result, fmt.Errorf("archive upload part size must be between %d and %d bytes on this build", manager.MinUploadPartSize, maxPartSize)
 	}
 	if opts.Concurrency == 0 {
-		opts.Concurrency = 3
+		opts.Concurrency = defaultArchiveConcurrency
 	}
-	if opts.Concurrency < 1 || opts.Concurrency > 32 {
-		return result, fmt.Errorf("archive upload concurrency must be between 1 and 32")
+	if opts.Concurrency < 1 || opts.Concurrency > maxArchiveConcurrency {
+		return result, fmt.Errorf("archive upload concurrency must be between 1 and %d", maxArchiveConcurrency)
 	}
 	files, err := planArchiveUploads(ctx, out.prefix, inputs)
 	if err != nil {

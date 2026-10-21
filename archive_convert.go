@@ -304,9 +304,6 @@ func archiveCompleteMetadata(metadata map[string]string, format, name string, ex
 	if metadata["name"] == "" {
 		metadata["name"] = name
 	}
-	if metadata["version"] == "" {
-		metadata["version"] = "1.3"
-	}
 	if metadata["type"] != "overlay" && metadata["type"] != "baselayer" {
 		metadata["type"] = "baselayer"
 	}

@@ -89,7 +89,7 @@ func TestS3Save(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := out.save(Tile{T: maptile.Tile{Z: 2, X: 3, Y: 1}, C: tt.body}, tt.format); err != nil {
+			if err := out.saveContext(context.Background(), Tile{T: maptile.Tile{Z: 2, X: 3, Y: 1}, C: tt.body}, tt.format); err != nil {
 				t.Fatalf("save: %v", err)
 			}
 			select {
@@ -132,7 +132,7 @@ func TestS3SaveAccessDenied(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = out.save(Tile{T: maptile.Tile{Z: 0}, C: []byte("tile")}, PNG)
+	err = out.saveContext(context.Background(), Tile{T: maptile.Tile{Z: 0}, C: []byte("tile")}, PNG)
 	if err == nil || !strings.Contains(err.Error(), "AccessDenied") || !strings.Contains(err.Error(), "403") {
 		t.Fatalf("save error = %v; want an S3 AccessDenied/403 error", err)
 	}

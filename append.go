@@ -403,36 +403,14 @@ func mergeDownloadVectorLayers(previous, current interface{}) ([]interface{}, er
 		if !ok {
 			return nil, fmt.Errorf("vector_layers must be a JSON array")
 		}
+		if err := archiveValidateVectorLayers(layers); err != nil {
+			return nil, err
+		}
 		for _, value := range layers {
-			layer, ok := value.(map[string]interface{})
-			if !ok {
-				return nil, fmt.Errorf("vector_layers entries must be objects")
-			}
-			id, ok := layer["id"].(string)
-			if !ok || strings.TrimSpace(id) == "" {
+			layer := value.(map[string]interface{})
+			id := layer["id"].(string)
+			if strings.TrimSpace(id) == "" {
 				return nil, fmt.Errorf("vector_layers entries require a nonempty string id")
-			}
-			fields, ok := layer["fields"].(map[string]interface{})
-			if !ok {
-				return nil, fmt.Errorf("vector layer %q requires a fields object", id)
-			}
-			for key, value := range fields {
-				if _, ok := value.(string); !ok {
-					return nil, fmt.Errorf("vector layer %q field %q must describe its type with a string", id, key)
-				}
-			}
-			for _, key := range []string{"minzoom", "maxzoom"} {
-				if value, exists := layer[key]; exists {
-					number, ok := value.(float64)
-					if !ok || number != math.Trunc(number) || number < 0 || number > 30 || math.IsNaN(number) || math.IsInf(number, 0) {
-						return nil, fmt.Errorf("vector layer %q has invalid %s metadata", id, key)
-					}
-				}
-			}
-			if low, lowOK := layer["minzoom"].(float64); lowOK {
-				if high, highOK := layer["maxzoom"].(float64); highOK && low > high {
-					return nil, fmt.Errorf("vector layer %q has a reversed zoom interval", id)
-				}
 			}
 			old, exists := index[id]
 			if !exists {

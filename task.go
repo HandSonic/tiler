@@ -23,9 +23,6 @@ import (
 	"tiler/internal/cover"
 )
 
-// MBTileVersion mbtiles版本号
-const MBTileVersion = "1.2"
-
 // Catch obvious misconfiguration before allocating pools and queues. This
 // count limit is not a process memory budget; large tiles need low concurrency.
 const maxTaskSlots = 1024
@@ -77,7 +74,7 @@ type Task struct {
 	repairTiles  map[int][]maptile.Tile
 	repairMode   bool
 	layerSources []string
-	sourceChecks map[int]map[maptile.Tile]string
+	sourceChecks map[int]map[maptile.Tile]int
 	sourceLast   map[int]int
 	sourceTiles  int
 }
@@ -199,7 +196,7 @@ func newDownloadTaskContext(parent context.Context, layers []Layer, m TileMap, m
 	task.layerSources = make([]string, len(layers))
 	sourcesByZoom := make(map[int]map[string]bool)
 	task.sourceLast = make(map[int]int)
-	task.sourceChecks = make(map[int]map[maptile.Tile]string)
+	task.sourceChecks = make(map[int]map[maptile.Tile]int)
 	for i, layer := range layers {
 		fingerprint, err := FailureSourceFingerprint(layer.URL)
 		if err != nil {
@@ -218,7 +215,7 @@ func newDownloadTaskContext(parent context.Context, layers []Layer, m TileMap, m
 	}
 	for zoom, sources := range sourcesByZoom {
 		if len(sources) > 1 {
-			task.sourceChecks[zoom] = make(map[maptile.Tile]string)
+			task.sourceChecks[zoom] = make(map[maptile.Tile]int)
 		}
 	}
 
@@ -300,7 +297,6 @@ func (task *Task) MetaItems() map[string]string {
 		"format":      task.TileMap.Format,
 		"type":        "baselayer",
 		"pixel_scale": strconv.Itoa(TileSize),
-		"version":     MBTileVersion,
 		"bounds":      fmt.Sprintf(`%s,%s,%s,%s`, formatDownloadCoordinate(b.Left()), formatDownloadCoordinate(b.Bottom()), formatDownloadCoordinate(b.Right()), formatDownloadCoordinate(b.Top())),
 		"center":      fmt.Sprintf(`%s,%s,%d`, formatDownloadCoordinate(c.X()), formatDownloadCoordinate(c.Y()), (task.Min+task.Max)/2),
 		"minzoom":     strconv.Itoa(task.Min),
@@ -629,20 +625,18 @@ func (task *Task) claimTileSource(tile maptile.Tile, layerIndex int) error {
 	}
 	current := task.layerSources[layerIndex]
 	if previous, exists := sources[tile]; exists {
-		if previous != current {
+		if task.layerSources[previous] != current {
 			return fmt.Errorf("tile %d/%d/%d belongs to conflicting source layers; use separate outputs", tile.Z, tile.X, tile.Y)
 		}
 		return nil
 	}
-	// Only zooms combining distinct sources need this index. Bound it to keep
-	// a large mixed-source job from exhausting memory before finding overlap.
 	// Only mixed-source zooms need this index. Bound its retained coordinates
 	// so overlap validation cannot grow for the entire download without limit.
 	const maxSourceCheckTiles = 1_000_000
 	if task.sourceTiles >= maxSourceCheckTiles {
 		return fmt.Errorf("mixed-source layers exceed the %d-tile overlap check limit; split their source layers into separate jobs", maxSourceCheckTiles)
 	}
-	sources[tile] = current
+	sources[tile] = layerIndex
 	task.sourceTiles++
 	return nil
 }

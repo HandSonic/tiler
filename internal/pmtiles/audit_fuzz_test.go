@@ -1,23 +1,35 @@
 package pmtiles
 
 import (
+	"bytes"
+	"compress/gzip"
+	"io"
 	"reflect"
 	"testing"
 )
 
 func FuzzDirectoryAuditRoundTrip(f *testing.F) {
-	f.Add(SerializeEntries([]EntryV3{{TileId: 0, Offset: 0, Length: 1, RunLength: 1}}))
-	f.Add(SerializeEntries([]EntryV3{{TileId: 5, Offset: 42, Length: 3, RunLength: 2}, {TileId: 9, Offset: 0, Length: 20, RunLength: 0}}))
-	f.Add([]byte{0x1f, 0x8b})
+	f.Add([]byte{1, 0, 1, 1, 1})
+	f.Add([]byte{2, 5, 4, 2, 0, 3, 20, 43, 1})
+	f.Add([]byte{1, 0, 1})
 	f.Fuzz(func(t *testing.T, data []byte) {
 		if len(data) > 64<<10 {
 			t.Skip()
 		}
-		entries, err := DeserializeEntries(data)
+		entries, err := DeserializeEntriesRaw(data)
 		if err != nil {
 			return
 		}
-		again, err := DeserializeEntries(SerializeEntries(entries))
+		reader, err := gzip.NewReader(bytes.NewReader(SerializeEntries(entries)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, err := io.ReadAll(reader)
+		reader.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		again, err := DeserializeEntriesRaw(raw)
 		if err != nil || !reflect.DeepEqual(entries, again) {
 			t.Fatalf("accepted directory failed canonical round trip: %v", err)
 		}
@@ -36,9 +48,6 @@ func FuzzHilbertAuditRoundTrip(f *testing.F) {
 		zz, xx, yy := IdToZxy(id)
 		if zz != z || xx != x || yy != y {
 			t.Fatalf("Hilbert mapping changed %d/%d/%d to %d/%d/%d", z, x, y, zz, xx, yy)
-		}
-		if z > 0 && ParentId(id) != ZxyToId(z-1, x/2, y/2) {
-			t.Fatalf("invalid Hilbert parent for %d/%d/%d", z, x, y)
 		}
 	})
 }
