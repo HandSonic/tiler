@@ -2,12 +2,9 @@ package main
 
 import (
 	"database/sql"
-	"flag"
 	"fmt"
 	"os"
-	"os/signal"
 	"strings"
-	"time"
 
 	"github.com/shiena/ansicolor"
 	log "github.com/sirupsen/logrus"
@@ -17,19 +14,7 @@ import (
 	"github.com/spf13/viper"
 )
 
-// flag
-var (
-	hf          bool
-	cf          string
-	interactive bool
-)
-
 func init() {
-	flag.BoolVar(&interactive, "i", false, "interactive controls: p/r/q then Enter")
-	flag.BoolVar(&hf, "h", false, "this help")
-	flag.StringVar(&cf, "c", "conf.toml", "set config `file`")
-	// 改变默认的 Usage，flag包中的Usage 其实是一个函数类型。这里是覆盖默认函数实现，具体见后面Usage部分的分析
-	flag.Usage = usage
 	//InitLog 初始化日志
 	log.SetFormatter(&nested.Formatter{
 		HideKeys:        true,
@@ -40,12 +25,6 @@ func init() {
 	// then wrap the log output with it
 	log.SetOutput(ansicolor.NewAnsiColorWriter(os.Stdout))
 	log.SetLevel(log.DebugLevel)
-}
-func usage() {
-	fmt.Fprintf(os.Stderr, `tiler version: tiler/v0.1.0
-Usage: tiler [-h] [-c filename]
-`)
-	flag.PrintDefaults()
 }
 
 // initConf 初始化配置
@@ -168,82 +147,12 @@ last:
 	// 提交事务
 	err = tx.Commit()
 	if err != nil {
-		log.Fatal(err)
+		log.Fatal(safeFailureError(err))
 	}
 }
 
 func main() {
-	flag.Parse()
-	if hf {
-		flag.Usage()
-		return
+	if err := runCLI(os.Args[1:], os.Stdout, os.Stderr); err != nil {
+		log.Fatal(safeFailureError(err))
 	}
-
-	if cf == "" {
-		cf = "conf.toml"
-	}
-	if err := initConf(cf); err != nil {
-		log.Fatal(err)
-	}
-	start := time.Now()
-	tm := TileMap{
-		Name:   viper.GetString("tm.name"),
-		Min:    viper.GetInt("tm.min"),
-		Max:    viper.GetInt("tm.max"),
-		Format: viper.GetString("tm.format"),
-		Schema: viper.GetString("tm.schema"),
-		JSON:   viper.GetString("tm.json"),
-		URL:    viper.GetString("tm.url"),
-	}
-	type cfgLayer struct {
-		Min     int
-		Max     int
-		Geojson string
-		URL     string
-	}
-	var cfgLrs []cfgLayer
-	err := viper.UnmarshalKey("lrs", &cfgLrs)
-	if err != nil {
-		log.Fatal("lrs配置错误")
-	}
-	var layers []Layer
-	for _, lrs := range cfgLrs {
-		if lrs.Min < 0 || lrs.Max > 30 || lrs.Min > lrs.Max {
-			log.Fatal("lrs min/max must satisfy 0 <= min <= max <= 30")
-		}
-		for z := lrs.Min; z <= lrs.Max; z++ {
-			c := loadCollection(lrs.Geojson)
-			layer := Layer{
-				URL:        lrs.URL,
-				Zoom:       z,
-				Collection: c,
-			}
-			layers = append(layers, layer)
-		}
-	}
-	task := NewTask(layers, tm)
-	if task == nil {
-		log.Fatal("no download layers configured")
-	}
-	interrupts := make(chan os.Signal, 1)
-	signal.Notify(interrupts, os.Interrupt)
-	defer signal.Stop(interrupts)
-	finished := make(chan struct{})
-	defer close(finished)
-	go func() {
-		select {
-		case <-interrupts:
-			task.Cancel()
-		case <-finished:
-		}
-	}()
-	if interactive {
-		fmt.Println("Controls: p + Enter = pause, r + Enter = resume, q + Enter = stop")
-		go task.readControls(os.Stdin, os.Stdout)
-	}
-	if err := task.Download(); err != nil {
-		log.Fatal(err)
-	}
-	secs := time.Since(start).Seconds()
-	log.Printf("\n%.3fs finished...", secs)
 }

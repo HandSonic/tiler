@@ -4,6 +4,8 @@
 
 按 GeoJSON 范围和缩放级别并发下载地图瓦片，支持本地文件、MBTiles（SQLite）及 S3 输出。数据源需使用标准 Web Mercator XYZ/TMS 瓦片地址；URL 中使用 `{z}`、`{x}`、`{y}`，需要反转行号时使用 `{-y}`。可通过多个 `[[lrs]]` 为不同级别设置不同范围。
 
+另有 `convert` 离线构建 MBTiles/PMTiles、`upload` 将已有归档上传到 S3/MinIO、`repair` 按失败清单补下载，均集成在同一个可执行文件中。
+
 `lrs.geojson` 支持 FeatureCollection、单个 Feature、裸 Geometry，以及带 `geojson` 几何字段的 Nominatim 数组，无需手工包装为 FeatureCollection。
 
 ## 编译与运行
@@ -54,13 +56,35 @@ timeout_seconds = 60
 
 Bucket 需预先存在，运行身份需有目标对象的 `s3:PutObject` 权限。凭证使用 AWS 默认凭证链：环境变量 `AWS_ACCESS_KEY_ID`、`AWS_SECRET_ACCESS_KEY`、可选的 `AWS_SESSION_TOKEN`，共享配置/`AWS_PROFILE`，或 IAM 角色。无需将密钥写入 TOML；`region` 留空时使用 `AWS_REGION`、`AWS_DEFAULT_REGION` 或 AWS profile。
 
-对象键为 `basemap/{z}/{x}/{y}.{format}`；空前缀时直接使用 `{z}/{x}/{y}.{format}`。S3 模式不创建本地副本，忽略 `output.directory` 和 `output.name`。`resume = false` 时同 key 会被覆盖；开启恢复时通过 HEAD 跳过非空对象，另需 `s3:GetObject` 权限；AWS S3 还需 `s3:ListBucket` 才能将缺失对象识别为 404（否则可能返回 403 并停止恢复，参见 [HeadObject 权限说明](https://docs.aws.amazon.com/AmazonS3/latest/API/API_HeadObject.html)）。
+对象键为 `basemap/{z}/{x}/{y}.{format}`；空前缀时直接使用 `{z}/{x}/{y}.{format}`。S3 模式不创建本地瓦片副本；`output.directory` 只用于默认失败清单位置，`output.name` 不影响对象键。`resume = false` 时同 key 会被覆盖；开启恢复时通过 HEAD 跳过非空对象，另需 `s3:GetObject` 权限；AWS S3 还需 `s3:ListBucket` 才能将缺失对象识别为 404（否则可能返回 403 并停止恢复，参见 [HeadObject 权限说明](https://docs.aws.amazon.com/AmazonS3/latest/API/API_HeadObject.html)）。
 
 MinIO 等兼容服务可设置 `endpoint = "http://localhost:9000"`、`force_path_style = true`，并提供对应 region 与凭证。下载和上传共享 `task.workers` 并发限制；上传使用 SDK 重试，`output.s3.timeout_seconds` 是单个上传的总超时（含重试），必须为正数。失败会使任务返回错误。
 
 生成 MBTiles 时，瓦片在内存中处理后直接写入 SQLite，不会另存散落的 PNG/JPG 文件。SQLite 运行时可能短暂生成 `-journal` 事务日志，正常完成后关闭数据库。
 
 仅文件输出会在瓦片根目录生成 `metadata.json`，可查看格式、层级、范围等信息；它不作为下载完成凭证。MBTiles 元数据仍在数据库中，S3 不额外生成该文件。
+
+## 离线转换、归档上传与补洞
+
+```sh
+# XYZ 目录内的路径为 z/x/y.png（也支持 jpg、pbf、webp）
+./tiler convert -input output/tiles -output basemap.mbtiles
+./tiler convert -input basemap.mbtiles -output basemap.pmtiles
+# 将目录里的图像实际转为 JPEG 后写入 MBTiles
+./tiler convert -input output/tiles -output basemap-jpg.mbtiles -format jpg
+# 读取 conf.toml 的 output.s3，上传已有归档；参数必须放在路径前
+./tiler upload -c conf.toml -timeout 2h basemap.mbtiles basemap.pmtiles
+# 仅重试清单内未解决的瓦片，写回原来的文件、MBTiles 或 S3 目标
+./tiler repair -c conf.toml -failures output/basemap.mbtiles.failures.json
+```
+
+`convert` 无需配置文件，支持 XYZ 目录 → MBTiles/PMTiles、MBTiles → PMTiles v3；不支持 PMTiles 输入或 MBTiles → MBTiles。MBTiles 支持 z0–30，PMTiles 支持 z0–26。默认拒绝覆盖，显式 `-overwrite` 才替换目标。PBF 会规范为一层 gzip；PBF 转 PMTiles 还需输入元数据包含有效的 TileJSON `vector_layers`。转换会使用临时数据库/归档，完成或报错后清理，不生成散落图片。
+
+`upload` 可接收多个 `.mbtiles`、`.pmtiles` 文件或目录，递归上传目录内的归档并保留相对路径。默认每个文件超时 1 小时，初始分段 8 MiB、每文件并发 3；上传完成才替换同 key 对象。失败后尝试中止当前分段上传并报告已完成数量，不提供跨进程的分段续传。上传 MBTiles 前须停止写入并完成 WAL checkpoint；存在非空 `-wal` 文件时会拒绝上传。
+
+下载失败时自动写出 JSON 清单，日志会显示路径；可用 `output.failure_file` 指定 `.json` 路径。首次成功的 MBTiles 下载不会额外创建失败清单。补洞沿用清单记录的原目标，必须保持地图名、格式、数据源、级别和目标配置一致；可更新 token 等认证参数。清单记录坐标、来源指纹和脱敏错误，不保存原始数据源 URL 或密钥。Ctrl+C 后尚未调度的范围不在失败清单内，恢复整个中断任务仍应使用 `output.resume = true`。
+
+完整参数、元数据样例和默认清单位置见 [转换、上传与补洞说明](docs/archive-and-repair.md)。Windows 中将 `./tiler` 换为 `.\tiler.exe`；这些子命令不需要额外安装 Python、Node、`mc` 或 PMTiles CLI。
 
 ## 恢复、格式与任务控制
 

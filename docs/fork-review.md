@@ -36,10 +36,12 @@
 | yeleibo [`9a27df1`](https://github.com/yeleibo/tiler/commit/9a27df1a699eb72d3bbcc76e9cc767ba1f1de732) | 统一读取 FeatureCollection、单个 Feature、裸 Geometry，以及含 `geojson` 几何字段的 Nominatim 数组；保持范围选择与元数据一致。 |
 | leafson [`20bed843`](https://github.com/leafson/tiler/commit/20bed84302b7160fbfa477b10e7409de497e2baa)；zhuiyuzhuiyu [`db472605`](https://github.com/zhuiyuzhuiyu/tiler/commit/db47260530a129e85c840f90ad9d8efa47cef865) | 并发安全地统计 `saved`、`skipped`、`failed`；实际保存成功后才计入 saved，SQLite 入队不算保存成功。 |
 
+后续按选定范围实现了原生 `convert`（XYZ → MBTiles/PMTiles、MBTiles → PMTiles）、`upload`（归档上传 S3/MinIO）和 `repair`（失败清单补洞），详见 [使用说明](archive-and-repair.md)。它们沿用 Go 1.20/Win7 构建约束，不依赖 fork 中的 Linux shell、容器或外部转换/上传程序；PMTiles v3 编解码基础来自 `protomaps/go-pmtiles`，随源码及打包产物附带 BSD-3-Clause 许可。
+
 ## 未采纳与兼容性边界
 
 - **代理/网络栈**：保留标准 HTTP(S) 代理环境变量、可配请求头和有界重试；不移植代理池、Linux shell 守护或容器调度。公开服务的授权、限流与可用性仍需实际环境验证。
-- **恢复与预算**：不采用“路径存在就成功”、404 空文件标记或未落盘的成功检查点。JSON 瓦片补洞清单、仅统计和严格下载预算可作为后续需求，当前不因 fork 中出现就声明已有。
+- **恢复与预算**：不采用“路径存在就成功”、404 空文件标记或未落盘的成功检查点。JSON 失败清单补洞已独立实现；仅统计和严格下载预算仍未实现。
 - **格式与坐标**：不照搬 X/Y 对调、全局 URL 替代各层 URL、固定 Referer 或始终 gzip PBF。专用签名代码也不移植：moshuiyan 的 [`7043778`](https://github.com/moshuiyan/tiler/commit/704377878c4cc200250e02ace0ba9297048b47d5) 在 URL 不匹配时可能索引空匹配，并把签名密钥写入日志。
-- **界面与额外工具**：暂不移入 React/Cesium、Qt、Gin 服务器、NLSC/3D Tiles 和 PMTiles 同步流水线。相关功能需单独确定产品范围、依赖版本和 Windows 支持。
+- **界面与额外工具**：暂不移入 React/Cesium、Qt、Gin 服务器、NLSC/3D Tiles 或原 fork 的 PMTiles 同步流水线。离线转换和归档上传以独立 CLI 子命令实现，不自动监听目录或持续同步。
 - **验证范围**：本次对 fork 的结论来自提交、差异和源码静态检查，没有验证其运行结果。任何 fork 的预编译 EXE、Linux 构建成功或 `go.mod` 版本声明，都不能证明真实 Win7 兼容。本分支仍固定 Go 1.20.14；实际云端 S3 与真实 Win7 运行验证独立进行。

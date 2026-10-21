@@ -67,13 +67,22 @@ type Task struct {
 	saved        atomic.Int64
 	skipped      atomic.Int64
 	failed       atomic.Int64
+	manifest     *FailureManifest
+	failurePath  string
+	repairTiles  map[int][]maptile.Tile
+	repairMode   bool
 }
 
 // NewTask 创建下载任务
 func NewTask(layers []Layer, m TileMap) *Task {
+	return newDownloadTask(layers, m, nil)
+}
+
+func newDownloadTask(layers []Layer, m TileMap, manifest *FailureManifest) *Task {
 	if len(layers) == 0 {
 		return nil
 	}
+	layers = append([]Layer(nil), layers...)
 	id, _ := shortid.Generate()
 
 	task := Task{
@@ -86,6 +95,32 @@ func NewTask(layers []Layer, m TileMap) *Task {
 	}
 
 	task.ctx, task.cancel = context.WithCancel(context.Background())
+	task.manifest = manifest
+	task.repairMode = manifest != nil
+	if task.manifest == nil {
+		task.manifest = newFailureManifest(m.Name, m.Format)
+	}
+	for i := range layers {
+		if layers[i].URL == "" {
+			layers[i].URL = m.URL
+		}
+	}
+	if task.repairMode {
+		records, err := manifest.RecordsForLayers(layers)
+		if err != nil {
+			task.initErr = err
+			return &task
+		}
+		task.repairTiles = make(map[int][]maptile.Tile)
+		for _, record := range records {
+			for i, layer := range layers {
+				if layer.Zoom == int(record.Tile.Z) && layer.URL == record.URL {
+					task.repairTiles[i] = append(task.repairTiles[i], record.Tile)
+					break
+				}
+			}
+		}
+	}
 	task.Min, task.Max = layers[0].Zoom, layers[0].Zoom
 	for i := 0; i < len(layers); i++ {
 		if layers[i].Zoom < 0 || layers[i].Zoom > 30 {
@@ -105,16 +140,20 @@ func NewTask(layers []Layer, m TileMap) *Task {
 			task.initErr = fmt.Errorf("zoom %d: %w", layers[i].Zoom, err)
 			return &task
 		}
-		count, err := cover.Count(layers[i].Collection, maptile.Zoom(layers[i].Zoom))
-		if err != nil {
-			task.initErr = err
-			return &task
+		if task.repairMode {
+			layers[i].Count = int64(len(task.repairTiles[i]))
+		} else {
+			count, err := cover.Count(layers[i].Collection, maptile.Zoom(layers[i].Zoom))
+			if err != nil {
+				task.initErr = err
+				return &task
+			}
+			layers[i].Count = count
 		}
-		layers[i].Count = count
 		log.Printf("zoom: %d, tiles: %d \n", layers[i].Zoom, layers[i].Count)
 		task.Total += layers[i].Count
 	}
-	if task.Total == 0 {
+	if task.Total == 0 && !task.repairMode {
 		task.initErr = fmt.Errorf("no tiles selected; check the layer GeoJSON and zoom levels")
 		return &task
 	}
@@ -228,9 +267,11 @@ func (task *Task) SetupMBTileTables() error {
 			return err
 		}
 	}
-	for name, value := range task.MetaItems() {
-		if _, err := db.Exec("insert or replace into metadata (name, value) values (?, ?)", name, value); err != nil {
-			return err
+	if !task.repairMode {
+		for name, value := range task.MetaItems() {
+			if _, err := db.Exec("insert or replace into metadata (name, value) values (?, ?)", name, value); err != nil {
+				return err
+			}
 		}
 	}
 	task.db = db
@@ -243,9 +284,10 @@ func (task *Task) savePipe() {
 	for tile := range task.savingpipe {
 		err := saveToMBTile(tile, task.db)
 		if err != nil {
-			task.tileFailure(fmt.Errorf("save %v tile to mbtiles: %w", tile.T, err))
+			task.recordTileFailure(tile.T, tile.Source, fmt.Errorf("save %v tile to mbtiles: %w", tile.T, err))
 		} else {
 			task.saved.Add(1)
+			task.resolveTileFailure(tile.T, tile.Source)
 		}
 	}
 }
@@ -265,7 +307,7 @@ func (task *Task) recordError(err error) {
 		task.firstErr = err
 	}
 	task.errMu.Unlock()
-	log.Error(err)
+	log.Error(safeFailureError(err))
 }
 
 // tileFetcher 瓦片加载器
@@ -288,46 +330,48 @@ func (task *Task) tileFetcher(mt maptile.Tile, url string) {
 	if task.resume {
 		exists, err := task.tileExists(task.ctx, mt)
 		if err != nil {
-			task.tileFailure(fmt.Errorf("check existing tile %v: %w", mt, err))
+			task.recordTileFailure(mt, url, fmt.Errorf("check existing tile %v: %w", mt, err))
 			return
 		}
 		if exists {
 			task.skipped.Add(1)
+			task.resolveTileFailure(mt, url)
 			return
 		}
 	}
 	body, err := task.fetchTile(task.ctx, tile)
 	if err != nil {
-		task.tileFailure(fmt.Errorf("fetch tile %v: %w", mt, err))
+		task.recordTileFailure(mt, url, fmt.Errorf("fetch tile %v: %w", mt, err))
 		return
 	}
 	data, err := prepareTileData(body, task.TileMap.Format, task.gzipPBF)
 	if err != nil {
-		task.tileFailure(fmt.Errorf("prepare tile %v: %w", mt, err))
+		task.recordTileFailure(mt, url, fmt.Errorf("prepare tile %v: %w", mt, err))
 		return
 	}
-	td := Tile{T: mt, C: data}
+	td := Tile{T: mt, C: data, Source: url}
 
 	//enable savingpipe
 	if task.outformat == "mbtiles" {
 		task.savingpipe <- td
 	} else {
 		if err := task.saveTile(td); err != nil {
-			task.tileFailure(fmt.Errorf("save tile %v: %w", mt, err))
+			task.recordTileFailure(mt, url, fmt.Errorf("save tile %v: %w", mt, err))
 			return
 		}
 		task.saved.Add(1)
+		task.resolveTileFailure(mt, url)
 	}
 
 	cost := time.Since(start).Milliseconds()
-	log.Infof("tile(z:%d, x:%d, y:%d), %dms , %.2f kb, %s ...\n", mt.Z, mt.X, mt.Y, cost, float32(len(body))/1024.0, tile)
+	log.Infof("tile(z:%d, x:%d, y:%d), %dms , %.2f kb ...\n", mt.Z, mt.X, mt.Y, cost, float32(len(body))/1024.0)
 }
 
 // DownloadZoom 下载指定层级
-func (task *Task) downloadLayer(layer Layer) {
+func (task *Task) downloadLayer(layer Layer, index int) {
 	bar := pb.New64(layer.Count).Prefix(fmt.Sprintf("Zoom %d : ", layer.Zoom)).Postfix("\n")
 	bar.Start()
-	err := cover.Walk(task.ctx, layer.Collection, maptile.Zoom(layer.Zoom), func(tile maptile.Tile) error {
+	visit := func(tile maptile.Tile) error {
 		if err := task.waitUntilRunning(task.ctx); err != nil {
 			return err
 		}
@@ -335,9 +379,10 @@ func (task *Task) downloadLayer(layer Layer) {
 			exists, err := task.tileExists(task.ctx, tile)
 			if err != nil || exists {
 				if err != nil {
-					task.tileFailure(fmt.Errorf("check existing tile %v: %w", tile, err))
+					task.recordTileFailure(tile, layer.URL, fmt.Errorf("check existing tile %v: %w", tile, err))
 				} else {
 					task.skipped.Add(1)
+					task.resolveTileFailure(tile, layer.URL)
 				}
 				bar.Increment()
 				task.Bar.Increment()
@@ -373,7 +418,17 @@ func (task *Task) downloadLayer(layer Layer) {
 		task.tileWG.Add(1)
 		go task.tileFetcher(tile, layer.URL)
 		return nil
-	})
+	}
+	var err error
+	if task.repairMode {
+		for _, tile := range task.repairTiles[index] {
+			if err = visit(tile); err != nil {
+				break
+			}
+		}
+	} else {
+		err = cover.Walk(task.ctx, layer.Collection, maptile.Zoom(layer.Zoom), visit)
+	}
 	if err != nil {
 		task.recordError(err)
 	}
@@ -386,18 +441,43 @@ func (task *Task) Download() error {
 	if task.initErr != nil {
 		return task.initErr
 	}
+	defer task.cancel()
+	if task.repairMode && task.Total == 0 {
+		return nil
+	}
 	if err := task.setupHTTP(); err != nil {
 		return err
 	}
-	defer task.cancel()
 	var saveDone chan struct{}
 	switch task.outformat {
 	case "s3":
-		out, err := newS3Output(task.ctx)
-		if err != nil {
-			return err
+		if task.s3 == nil {
+			out, err := newS3Output(task.ctx)
+			if err != nil {
+				return err
+			}
+			task.s3 = out
 		}
-		task.s3 = out
+	case "file", "mbtiles":
+		if task.File == "" {
+			file, err := task.outputPath()
+			if err != nil {
+				return err
+			}
+			task.File = file
+		}
+		if task.repairMode {
+			if err := validateExistingRepairTarget(task.outformat, task.File); err != nil {
+				return err
+			}
+		}
+	default:
+		return fmt.Errorf("unsupported output.format %q (expected file, mbtiles or s3)", task.outformat)
+	}
+	if err := task.setupFailureManifest(); err != nil {
+		return err
+	}
+	switch task.outformat {
 	case "mbtiles":
 		if err := task.SetupMBTileTables(); err != nil {
 			return fmt.Errorf("initialize mbtiles: %w", err)
@@ -408,37 +488,43 @@ func (task *Task) Download() error {
 			task.savePipe()
 			close(saveDone)
 		}()
-	case "file":
-		if task.File == "" {
-			file, err := task.outputPath()
-			if err != nil {
-				return err
+		defer func() {
+			if saveDone != nil {
+				close(task.savingpipe)
+				<-saveDone
 			}
-			task.File = file
-		}
+		}()
+	case "file":
 		if err := os.MkdirAll(task.File, os.ModePerm); err != nil {
 			return fmt.Errorf("create output directory: %w", err)
 		}
-		if err := task.saveFileMetadata(); err != nil {
-			return fmt.Errorf("save file metadata: %w", err)
+		if !task.repairMode {
+			if err := task.saveFileMetadata(); err != nil {
+				return fmt.Errorf("save file metadata: %w", err)
+			}
 		}
-	default:
-		return fmt.Errorf("unsupported output.format %q (expected file, mbtiles or s3)", task.outformat)
 	}
 	//g orb.Geometry, minz int, maxz int
 	task.Bar = pb.New64(task.Total).Prefix("Task : ").Postfix("\n")
 	// task.Bar.SetRefreshRate(10 * time.Second)
 	// task.Bar.Format("<.- >")
 	task.Bar.Start()
-	for _, layer := range task.Layers {
+	for i, layer := range task.Layers {
+		if layer.Count == 0 {
+			continue
+		}
 		if task.ctx.Err() != nil {
 			break
 		}
-		task.downloadLayer(layer)
+		task.downloadLayer(layer, i)
 	}
 	if saveDone != nil {
 		close(task.savingpipe)
 		<-saveDone
+		saveDone = nil
+	}
+	if err := task.persistFailureManifest(); err != nil {
+		task.recordError(err)
 	}
 	stats := task.Stats()
 	log.Infof("Task %s: saved=%d skipped=%d failed=%d", task.ID, stats.Saved, stats.Skipped, stats.Failed)

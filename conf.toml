@@ -4,7 +4,7 @@
 [output]
 	#can be mbtiles/file/s3
 	format ="file"
-	#the output dir for file/mbtiles (unused for s3)
+	#file/mbtiles output dir; also holds the default local S3 failure manifest
 	directory ="output"
 	#skip existing nonempty tiles; keep the same source and output settings
 	resume = false
@@ -12,8 +12,10 @@
 	name = ""
 	#optional PBF gzip override: file defaults false; mbtiles/s3 default true
 	#gzip_pbf = true
+	#optional JSON failure manifest path; repair reuses the original output target
+	#failure_file = "output/failures.json"
 [output.s3]
-	#used only when output.format = "s3"; bucket must already exist
+	#used for direct S3 output and the upload command; bucket must already exist
 	bucket = ""
 	#object key: prefix/z/x/y.ext; empty prefix gives z/x/y.ext
 	prefix = "tiles"
@@ -23,7 +25,7 @@
 	endpoint = ""
 	#MinIO generally needs true; AWS S3 can use false
 	force_path_style = false
-	#positive timeout for each upload, including SDK retries
+	#positive timeout per direct tile upload; archive upload uses CLI -timeout
 	timeout_seconds = 60
 	#credentials come from the AWS SDK default chain, not this file
 [task]
@@ -51,7 +53,7 @@
 	format = "jpg"
 	#can be xyz/tms (Web Mercator only)
 	schema = "xyz"
-	#the vector tiles metadata tilejson
+	#vector TileJSON metadata; PMTiles PBF conversion requires valid vector_layers
 	# json = ""
 	#url is the schema url of tiles
 	# url = "https://api.mapbox.com/v4/mapbox.mapbox-streets-v8/{z}/{x}/{y}.vector.pbf?sku=1016gFniej06a&access_token=pk.eyJ1IjoibWFwYm94IiwiYSI6ImNpejY4M29iazA2Z2gycXA4N2pmbDZmangifQ.-g_vE53SD2WrJ6tFX7QHmA"
@@ -76,4 +78,4 @@
  [[lrs]]
   	min = 11
   	max = 11
-  	geojson = "./geojson/nanjing.geojson"
+    geojson = "./geojson/nanjing.geojson"

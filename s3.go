@@ -22,10 +22,11 @@ import (
 // s3Output is shared by the download workers. Each tile is uploaded before its
 // worker is released, so task.workers also bounds the number of S3 requests.
 type s3Output struct {
-	client  *s3.Client
-	bucket  string
-	prefix  string
-	timeout time.Duration
+	client              *s3.Client
+	bucket              string
+	prefix              string
+	endpointFingerprint string
+	timeout             time.Duration
 }
 
 func newS3Output(ctx context.Context) (*s3Output, error) {
@@ -64,11 +65,18 @@ func newS3Output(ctx context.Context) (*s3Output, error) {
 			o.BaseEndpoint = aws.String(endpoint)
 		}
 	})
+	// Options includes endpoint overrides from the AWS environment/profile as
+	// well as output.s3.endpoint, so a repair cannot silently change services.
+	endpointFingerprint, err := FailureS3EndpointFingerprint(aws.ToString(client.Options().BaseEndpoint), cfg.Region)
+	if err != nil {
+		return nil, err
+	}
 	return &s3Output{
-		client:  client,
-		bucket:  bucket,
-		prefix:  strings.Trim(viper.GetString("output.s3.prefix"), "/"),
-		timeout: time.Duration(timeoutSeconds) * time.Second,
+		client:              client,
+		bucket:              bucket,
+		prefix:              strings.Trim(viper.GetString("output.s3.prefix"), "/"),
+		endpointFingerprint: endpointFingerprint,
+		timeout:             time.Duration(timeoutSeconds) * time.Second,
 	}, nil
 }
 

@@ -33,6 +33,7 @@ func configureS3Test(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("AWS_CONFIG_FILE", filepath.Join(dir, "config"))
 	t.Setenv("AWS_SHARED_CREDENTIALS_FILE", filepath.Join(dir, "credentials"))
+	viper.Set("output.directory", t.TempDir())
 	viper.Set("output.s3.bucket", "test-bucket")
 	viper.Set("output.s3.force_path_style", true)
 }

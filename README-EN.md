@@ -4,6 +4,8 @@
 
 Download map tiles concurrently within GeoJSON boundaries to files, MBTiles (SQLite), or S3. Sources must use standard Web Mercator XYZ/TMS grids. URL placeholders are `{z}`, `{x}`, `{y}`, and `{-y}` for an inverted row. Multiple `[[lrs]]` sections can assign different boundaries to different zoom levels.
 
+The same executable includes `convert` for offline MBTiles/PMTiles creation, `upload` for existing archives on S3/MinIO, and `repair` for replaying failed tile coordinates.
+
 `lrs.geojson` accepts a FeatureCollection, a single Feature, a bare Geometry, or a Nominatim array containing `geojson` geometry fields; no manual FeatureCollection wrapper is needed.
 
 ## Build and run
@@ -54,13 +56,35 @@ timeout_seconds = 60
 
 Create the bucket beforehand and grant `s3:PutObject` on the target objects. Credentials use the AWS default chain: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, optional `AWS_SESSION_TOKEN`, shared configuration/`AWS_PROFILE`, or an IAM role. Keep credentials out of TOML. An empty `region` uses `AWS_REGION`, `AWS_DEFAULT_REGION`, or the AWS profile.
 
-Keys are `basemap/{z}/{x}/{y}.{format}`, or `{z}/{x}/{y}.{format}` with an empty prefix. S3 writes no local copy and ignores `output.directory` and `output.name`. With `resume = false`, existing keys are overwritten; resume uses HEAD to skip nonempty objects and additionally requires `s3:GetObject`. AWS S3 also needs `s3:ListBucket` to distinguish missing objects (404) from access denial (403); see [HeadObject permissions](https://docs.aws.amazon.com/AmazonS3/latest/API/API_HeadObject.html).
+Keys are `basemap/{z}/{x}/{y}.{format}`, or `{z}/{x}/{y}.{format}` with an empty prefix. S3 writes no local tile copy; `output.directory` provides the default local failure-manifest directory, and `output.name` does not affect object keys. With `resume = false`, existing keys are overwritten; resume uses HEAD to skip nonempty objects and additionally requires `s3:GetObject`. AWS S3 also needs `s3:ListBucket` to distinguish missing objects (404) from access denial (403); see [HeadObject permissions](https://docs.aws.amazon.com/AmazonS3/latest/API/API_HeadObject.html).
 
 For MinIO or another compatible service, set `endpoint = "http://localhost:9000"`, `force_path_style = true`, and the service's region and credentials. Downloads and uploads share `task.workers`. Uploads use SDK retries; positive `output.s3.timeout_seconds` limits each upload including retries. Failures cause the task to return an error.
 
 MBTiles output processes tiles in memory and writes directly to SQLite, without loose PNG/JPG files. SQLite may temporarily create a `-journal` transaction log; the database is closed after all queued writes finish.
 
 File output alone writes `metadata.json` in the tile root with format, zoom, and bounds information. It is not proof of download completion. MBTiles retains metadata in SQLite, and S3 does not add this file.
+
+## Offline conversion, archive upload, and repair
+
+```sh
+# XYZ directory paths are z/x/y.png (jpg, pbf, and webp are also accepted).
+./tiler convert -input output/tiles -output basemap.mbtiles
+./tiler convert -input basemap.mbtiles -output basemap.pmtiles
+# Actually encode images as JPEG while building MBTiles.
+./tiler convert -input output/tiles -output basemap-jpg.mbtiles -format jpg
+# Use output.s3 from conf.toml; put flags before input paths.
+./tiler upload -c conf.toml -timeout 2h basemap.mbtiles basemap.pmtiles
+# Retry only unresolved manifest entries at their original output destination.
+./tiler repair -c conf.toml -failures output/basemap.mbtiles.failures.json
+```
+
+`convert` needs no configuration file. It supports XYZ directory → MBTiles/PMTiles and MBTiles → PMTiles v3; PMTiles input and MBTiles → MBTiles are unsupported. MBTiles supports z0–30 and PMTiles z0–26. Existing outputs are rejected unless `-overwrite` is explicit. PBF is normalized to one gzip layer. PBF → PMTiles requires valid TileJSON `vector_layers` in the input metadata. Temporary databases/archives are cleaned up after success or failure; conversion creates no loose image files.
+
+`upload` accepts multiple `.mbtiles`/`.pmtiles` files or directories, recursively finding archives and preserving directory-relative paths. Defaults are a one-hour timeout per file, initial 8 MiB parts, and three concurrent parts per file. An existing key is replaced when its upload completes. A failed multipart upload is aborted where possible; the command reports previously completed uploads and does not resume multipart state across processes. Stop writes and complete the WAL checkpoint before uploading MBTiles; a nonempty `-wal` sidecar is rejected.
+
+Downloads with failures write a JSON manifest and log its path. Set `output.failure_file` to choose a `.json` path. A successful first MBTiles download does not create an extra failure manifest. Repair reuses the recorded destination; keep the same map name, format, source, zooms, and output settings. Authentication parameters such as tokens may be refreshed. Manifests store coordinates, source fingerprints, and redacted errors, without original source URLs or keys. Coordinates not yet scheduled when Ctrl+C was pressed are absent; use `output.resume = true` to recover the whole interrupted task.
+
+See [conversion, upload, and repair details](docs/archive-and-repair.md) for options, metadata examples, and manifest paths. On Windows, use `.\tiler.exe` in place of `./tiler`. These commands require no separate Python, Node, `mc`, or PMTiles CLI installation.
 
 ## Resume, encoding, and controls
 

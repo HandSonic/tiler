@@ -170,7 +170,7 @@ func TestDownloadFailureDoesNotLeaveResumableFiles(t *testing.T) {
 				t.Errorf("requests = %d; want 1 with retries disabled", got)
 			}
 			if err := filepath.WalkDir(task.File, func(path string, entry os.DirEntry, err error) error {
-				if err == nil && !entry.IsDir() && entry.Name() != "metadata.json" {
+				if err == nil && !entry.IsDir() && entry.Name() != "metadata.json" && entry.Name() != "failures.json" {
 					t.Errorf("failed download left file %s", path)
 				}
 				return err

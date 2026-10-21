@@ -1,0 +1,199 @@
+package main
+
+import (
+	"context"
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"os"
+	"os/signal"
+	"strings"
+	"time"
+
+	log "github.com/sirupsen/logrus"
+	"github.com/spf13/viper"
+)
+
+func runCLI(args []string, stdout, stderr io.Writer) error {
+	command := "download"
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		command, args = args[0], args[1:]
+	}
+	var err error
+	switch command {
+	case "help":
+		fmt.Fprintln(stdout, "Usage: tiler [download|convert|upload|repair] [options]")
+		fmt.Fprintln(stdout, "Run tiler <command> -h for command options.")
+		return nil
+	case "download", "repair":
+		err = runDownloadCLI(command, args, stdout, stderr)
+	case "convert":
+		err = runConvertCLI(args, stdout, stderr)
+	case "upload":
+		err = runUploadCLI(args, stdout, stderr)
+	default:
+		return fmt.Errorf("unknown command %q; use download, convert, upload or repair", command)
+	}
+	if errors.Is(err, flag.ErrHelp) {
+		return nil
+	}
+	return err
+}
+
+func runConvertCLI(args []string, stdout, stderr io.Writer) error {
+	fs := flag.NewFlagSet("convert", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	input := fs.String("input", "", "XYZ directory or MBTiles input path")
+	output := fs.String("output", "", "destination .mbtiles or .pmtiles path")
+	format := fs.String("format", "", "tile format override: png, jpg, pbf or webp")
+	name := fs.String("name", "", "optional archive name")
+	overwrite := fs.Bool("overwrite", false, "replace an existing destination after conversion succeeds")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *input == "" || *output == "" || fs.NArg() != 0 {
+		return fmt.Errorf("convert requires -input and -output")
+	}
+	metadata := map[string]string{}
+	if *name != "" {
+		metadata["name"] = *name
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	result, err := ConvertArchive(ctx, *input, *output, ArchiveConvertOptions{Format: *format, Overwrite: *overwrite, Metadata: metadata})
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(stdout, "Converted %d %s tiles to %s\n", result.Tiles, result.Format, *output)
+	return nil
+}
+
+func runUploadCLI(args []string, stdout, stderr io.Writer) error {
+	fs := flag.NewFlagSet("upload", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	config := fs.String("c", "conf.toml", "configuration file containing output.s3")
+	timeout := fs.Duration("timeout", time.Hour, "total timeout per archive, including retries")
+	partMiB := fs.Int64("part-size-mib", 8, "multipart upload part size in MiB (at least 5)")
+	concurrency := fs.Int("concurrency", 3, "parallel parts per archive")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() == 0 {
+		return fmt.Errorf("upload requires one or more archive files or directories")
+	}
+	if *partMiB < 5 || *partMiB > (1<<63-1)/(1024*1024) {
+		return fmt.Errorf("part-size-mib must be at least 5 and fit a 64-bit byte size")
+	}
+	if *timeout <= 0 || *concurrency < 1 || *concurrency > 32 {
+		return fmt.Errorf("timeout must be positive and concurrency must be between 1 and 32")
+	}
+	if err := initConf(*config); err != nil {
+		return err
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	out, err := newS3Output(ctx)
+	if err != nil {
+		return err
+	}
+	result, err := UploadArchives(ctx, out, fs.Args(), ArchiveUploadOptions{Timeout: *timeout, PartSize: *partMiB * 1024 * 1024, Concurrency: *concurrency})
+	fmt.Fprintf(stdout, "Uploaded %d archive(s), %d bytes\n", result.Uploaded, result.Bytes)
+	return err
+}
+
+func configuredLayers() ([]Layer, TileMap, error) {
+	tm := TileMap{Name: viper.GetString("tm.name"), Min: viper.GetInt("tm.min"), Max: viper.GetInt("tm.max"), Format: strings.ToLower(viper.GetString("tm.format")), Schema: viper.GetString("tm.schema"), JSON: viper.GetString("tm.json"), URL: viper.GetString("tm.url")}
+	type cfgLayer struct {
+		Min, Max     int
+		Geojson, URL string
+	}
+	var cfg []cfgLayer
+	if err := viper.UnmarshalKey("lrs", &cfg); err != nil {
+		return nil, tm, fmt.Errorf("invalid lrs: %w", err)
+	}
+	if len(cfg) == 0 {
+		return nil, tm, fmt.Errorf("no download layers configured")
+	}
+	var layers []Layer
+	for i, c := range cfg {
+		if c.Min < 0 || c.Max > 30 || c.Min > c.Max {
+			return nil, tm, fmt.Errorf("lrs[%d] must satisfy 0 <= min <= max <= 30", i)
+		}
+		collection, err := readCollection(c.Geojson)
+		if err != nil {
+			return nil, tm, err
+		}
+		for z := c.Min; z <= c.Max; z++ {
+			layers = append(layers, Layer{URL: c.URL, Zoom: z, Collection: collection})
+		}
+	}
+	return layers, tm, nil
+}
+
+func runDownloadCLI(command string, args []string, stdout, stderr io.Writer) error {
+	fs := flag.NewFlagSet(command, flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	config := fs.String("c", "conf.toml", "configuration file")
+	interactive := fs.Bool("i", false, "interactive controls: p/r/q then Enter")
+	failures := fs.String("failures", "", "failed-tile JSON manifest (required for repair)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 0 {
+		return fmt.Errorf("unexpected arguments: %v", fs.Args())
+	}
+	if command == "repair" && *failures == "" {
+		return fmt.Errorf("repair requires -failures")
+	}
+	if command == "download" && *failures != "" {
+		return fmt.Errorf("use repair -failures to replay a failed-tile manifest")
+	}
+	if err := initConf(*config); err != nil {
+		return err
+	}
+	layers, tm, err := configuredLayers()
+	if err != nil {
+		return err
+	}
+	var task *Task
+	if command == "repair" {
+		manifest, err := LoadFailureManifest(*failures)
+		if err != nil {
+			return err
+		}
+		task, err = NewRepairTask(layers, tm, manifest, *failures)
+		if err != nil {
+			return err
+		}
+	} else {
+		task = NewTask(layers, tm)
+	}
+	if task == nil {
+		return fmt.Errorf("no download layers configured")
+	}
+	defer task.Cancel()
+	if command == "repair" && task.Total == 0 {
+		fmt.Fprintln(stdout, "Failure manifest is empty; no tiles need repair.")
+		return nil
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	finished := make(chan struct{})
+	defer close(finished)
+	go func() {
+		select {
+		case <-ctx.Done():
+			task.Cancel()
+		case <-finished:
+		}
+	}()
+	if *interactive {
+		fmt.Fprintln(stdout, "Controls: p + Enter = pause, r + Enter = resume, q + Enter = stop")
+		go task.readControls(os.Stdin, stdout)
+	}
+	start := time.Now()
+	err = task.Download()
+	log.Printf("%.3fs elapsed", time.Since(start).Seconds())
+	return err
+}
