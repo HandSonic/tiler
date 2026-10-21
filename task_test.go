@@ -33,7 +33,7 @@ func configureTaskTest(t *testing.T, output string) string {
 
 func taskForTest(url, format string, points orb.Collection) *Task {
 	return NewTask([]Layer{{Zoom: 2, Collection: points}}, TileMap{
-		Name: "test-map", Min: 2, Max: 2, Format: format, Schema: "xyz",
+		Name: "test-map", Min: 2, Max: 2, Format: format,
 		URL: url + "/{z}/{x}/{y}",
 	})
 }

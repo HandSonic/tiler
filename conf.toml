@@ -62,11 +62,9 @@
 	max = 11
 	#pbf/png/jpg; png/jpg convert the actual image encoding
 	format = "jpg"
-	#can be xyz/tms (Web Mercator only)
-	schema = "xyz"
 	#vector TileJSON metadata; PMTiles PBF conversion requires valid vector_layers
 	# json = ""
-	#url is the schema url of tiles; replace YOUR_API_TOKEN with your own provider token
+	#Web Mercator URL template: {y} for XYZ, {-y} for TMS; replace YOUR_API_TOKEN
 	# url = "https://api.mapbox.com/v4/mapbox.mapbox-streets-v8/{z}/{x}/{y}.vector.pbf?sku=1016gFniej06a&access_token=YOUR_API_TOKEN"
 	# url = "https://api.mapbox.com/v4/mapbox.mapbox-terrain-v2/{z}/{x}/{y}.vector.pbf?sku=1016gFniej06a&access_token=YOUR_API_TOKEN"
 	# url = "https://api.maptiler.com/tiles/v3/{z}/{x}/{y}.pbf?key=YOUR_API_TOKEN"

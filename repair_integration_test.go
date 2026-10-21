@@ -26,7 +26,7 @@ func repairIntegrationLayers(template string) []Layer {
 }
 
 func repairIntegrationMap(template string) TileMap {
-	return TileMap{Name: "repair-map", URL: template, Format: PNG, Schema: "xyz"}
+	return TileMap{Name: "repair-map", URL: template, Format: PNG}
 }
 
 func repairIntegrationReadTile(t *testing.T, kind, path string, tile maptile.Tile) []byte {

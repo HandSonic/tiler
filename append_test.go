@@ -88,7 +88,7 @@ func TestDownloadAppendRegionsPreservesTilesAndExtendsCoverage(t *testing.T) {
 			defer server.Close()
 			template := server.URL + "/{z}/{x}/{y}"
 			regionA := Layer{Zoom: 1, URL: template, Collection: orb.Collection{orb.Point{-90, 45}}}
-			first := NewTask([]Layer{regionA}, TileMap{Name: "region A", Format: PNG, Schema: "xyz", JSON: `{"center":[-90,45,1],"custom":"keep","custom_id":9007199254740993,"nested":{"id":9007199254740993}}`})
+			first := NewTask([]Layer{regionA}, TileMap{Name: "region A", Format: PNG, JSON: `{"center":[-90,45,1],"custom":"keep","custom_id":9007199254740993,"nested":{"id":9007199254740993}}`})
 			t.Cleanup(first.Cancel)
 			if !first.resume {
 				t.Fatal("append did not enable tile resume")
@@ -106,7 +106,7 @@ func TestDownloadAppendRegionsPreservesTilesAndExtendsCoverage(t *testing.T) {
 				viper.Set("output.resume", true)
 			}
 			regionB := Layer{Zoom: 2, URL: template, Collection: orb.Collection{orb.Point{90, -45}}}
-			next := NewTask([]Layer{regionA, regionB}, TileMap{Name: "region B", Format: PNG, Schema: "xyz"})
+			next := NewTask([]Layer{regionA, regionB}, TileMap{Name: "region B", Format: PNG})
 			t.Cleanup(next.Cancel)
 			if err := next.Download(); err != nil {
 				t.Fatal(err)

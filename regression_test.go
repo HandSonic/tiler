@@ -40,7 +40,7 @@ func configureRegressionOutput(t *testing.T) string {
 func newRegressionTask(t *testing.T, tileURL string) *Task {
 	t.Helper()
 	task := NewTask([]Layer{{Zoom: 0, Collection: orb.Collection{orb.Point{0, 0}}}}, TileMap{
-		Name: "regression", URL: tileURL, Format: PNG, Schema: "xyz",
+		Name: "regression", URL: tileURL, Format: PNG,
 	})
 	if task == nil {
 		t.Fatal("NewTask returned nil for a point layer")

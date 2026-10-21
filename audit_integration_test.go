@@ -32,7 +32,7 @@ func TestAuditMBTilesPBFEncodingMatchesStandard(t *testing.T) {
 	viper.Set("output.gzip_pbf", false)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write(auditRealMVT()) }))
 	defer server.Close()
-	task := NewTask([]Layer{{Zoom: 0, URL: server.URL, Collection: orb.Collection{orb.Point{0, 0}}}}, TileMap{Name: "vector", Format: PBF, Schema: "xyz", JSON: `{"vector_layers":[{"id":"test","fields":{}}]}`})
+	task := NewTask([]Layer{{Zoom: 0, URL: server.URL, Collection: orb.Collection{orb.Point{0, 0}}}}, TileMap{Name: "vector", Format: PBF, JSON: `{"vector_layers":[{"id":"test","fields":{}}]}`})
 	t.Cleanup(task.Cancel)
 	if err := task.Download(); err == nil || !strings.Contains(err.Error(), "gzip") {
 		t.Fatalf("uncompressed PBF MBTiles must be rejected: %v", err)
@@ -64,7 +64,7 @@ func TestAuditDownloadMetadataRetainsFineRegionBounds(t *testing.T) {
 	defer server.Close()
 	west, south, east, north := 10.00000001, 20.00000001, 10.00000049, 20.00000049
 	region := orb.Polygon{{{west, south}, {east, south}, {east, north}, {west, north}, {west, south}}}
-	task := NewTask([]Layer{{Zoom: 24, URL: server.URL + "/{z}/{x}/{y}.png", Collection: orb.Collection{region}}}, TileMap{Name: "fine", Format: PNG, Schema: "xyz"})
+	task := NewTask([]Layer{{Zoom: 24, URL: server.URL + "/{z}/{x}/{y}.png", Collection: orb.Collection{region}}}, TileMap{Name: "fine", Format: PNG})
 	if task == nil || task.initErr != nil {
 		t.Fatalf("init: %+v", task)
 	}
@@ -139,7 +139,7 @@ func TestAuditMBTilesVectorSchemaMatchesExportedDataset(t *testing.T) {
 			viper.Set("output.format", "mbtiles")
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write(auditRealMVT()) }))
 			defer server.Close()
-			task := NewTask([]Layer{{Zoom: 5, URL: server.URL, Collection: orb.Collection{orb.Point{0, 0}}}}, TileMap{Name: "vector", Format: PBF, Schema: "xyz", JSON: tc.schema})
+			task := NewTask([]Layer{{Zoom: 5, URL: server.URL, Collection: orb.Collection{orb.Point{0, 0}}}}, TileMap{Name: "vector", Format: PBF, JSON: tc.schema})
 			t.Cleanup(task.Cancel)
 			err := task.Download()
 			if tc.invalid {
@@ -212,7 +212,7 @@ func TestAuditLooseRawPBFConversionAndAppendWorkflow(t *testing.T) {
 			body := auditRealMVT()
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write(body) }))
 			defer server.Close()
-			task := NewTask([]Layer{{Zoom: 2, URL: server.URL, Collection: orb.Collection{orb.Point{0, 0}}}}, TileMap{Name: "raw-vector", Format: PBF, Schema: "xyz"})
+			task := NewTask([]Layer{{Zoom: 2, URL: server.URL, Collection: orb.Collection{orb.Point{0, 0}}}}, TileMap{Name: "raw-vector", Format: PBF})
 			t.Cleanup(task.Cancel)
 			if err := task.Download(); err != nil {
 				t.Fatalf("raw PBF should remain supported for %s output: %v", kind, err)
@@ -414,7 +414,7 @@ func TestAuditPBFDownloadAppendDoesNotNarrowImplicitLayerZooms(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				task := NewTask([]Layer{{Zoom: zoom, URL: server.URL, Collection: orb.Collection{orb.Point{0, 0}}}}, TileMap{Name: "vector", Format: PBF, Schema: "xyz", JSON: string(description)})
+				task := NewTask([]Layer{{Zoom: zoom, URL: server.URL, Collection: orb.Collection{orb.Point{0, 0}}}}, TileMap{Name: "vector", Format: PBF, JSON: string(description)})
 				t.Cleanup(task.Cancel)
 				if err := task.Download(); err != nil {
 					t.Fatal(err)

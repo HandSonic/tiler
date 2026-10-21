@@ -108,7 +108,6 @@ retries = 0
 name = "cli-map"
 description = "CLI map description"
 format = "png"
-schema = "xyz"
 url = %q
 [[lrs]]
 min = 1

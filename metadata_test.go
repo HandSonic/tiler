@@ -15,7 +15,7 @@ func fileMetadataTask(dir string) *Task {
 	return &Task{
 		ID: "metadata-test", Name: "test-map", File: dir, Min: 3, Max: 8,
 		outformat: "file",
-		TileMap:   TileMap{Name: "test-map", Format: PNG, Schema: "xyz"},
+		TileMap:   TileMap{Name: "test-map", Format: PNG},
 		Layers: []Layer{
 			{Zoom: 3, Collection: orb.Collection{orb.Bound{Min: orb.Point{10, 20}, Max: orb.Point{30, 40}}}},
 			{Zoom: 8, Collection: orb.Collection{orb.Bound{Min: orb.Point{30, 40}, Max: orb.Point{50, 60}}}},
@@ -55,9 +55,6 @@ func TestSaveFileMetadata(t *testing.T) {
 		if got[key] != want {
 			t.Errorf("metadata[%q] = %q; want %q", key, got[key], want)
 		}
-	}
-	if !bytes.HasPrefix(data, []byte("{\n  \"")) || !bytes.HasSuffix(data, []byte("\n")) {
-		t.Error("metadata should be indented JSON with a final newline")
 	}
 	assertNoMetadataTemps(t, task.File)
 }

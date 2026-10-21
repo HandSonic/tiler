@@ -21,7 +21,7 @@ import (
 
 func layoutTask(t *testing.T, source string) *Task {
 	t.Helper()
-	task := NewTask([]Layer{{Zoom: 2, URL: source, Collection: orb.Collection{orb.Point{90, 45}}}}, TileMap{Name: "layout", Format: PNG, Schema: "xyz", URL: source})
+	task := NewTask([]Layer{{Zoom: 2, URL: source, Collection: orb.Collection{orb.Point{90, 45}}}}, TileMap{Name: "layout", Format: PNG, URL: source})
 	if task == nil || task.initErr != nil {
 		t.Fatalf("initialize layout task: %v", task)
 	}

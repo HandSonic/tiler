@@ -160,7 +160,7 @@ func runUploadCLI(args []string, stdout, stderr io.Writer) error {
 }
 
 func configuredLayers() ([]Layer, TileMap, error) {
-	tm := TileMap{Name: viper.GetString("tm.name"), Description: viper.GetString("tm.description"), Min: viper.GetInt("tm.min"), Max: viper.GetInt("tm.max"), Format: strings.ToLower(viper.GetString("tm.format")), Schema: viper.GetString("tm.schema"), JSON: viper.GetString("tm.json"), URL: viper.GetString("tm.url")}
+	tm := TileMap{Name: viper.GetString("tm.name"), Description: viper.GetString("tm.description"), Min: viper.GetInt("tm.min"), Max: viper.GetInt("tm.max"), Format: strings.ToLower(viper.GetString("tm.format")), JSON: viper.GetString("tm.json"), URL: viper.GetString("tm.url")}
 	type cfgLayer struct {
 		Min, Max     int
 		Geojson, URL string
