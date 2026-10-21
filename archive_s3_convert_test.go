@@ -17,6 +17,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/paulmach/orb/maptile"
 )
 
 type archiveS3TestObject struct {
@@ -223,6 +225,29 @@ func TestS3ConversionLooseRoundTripWithPaginationAndCustomLayouts(t *testing.T) 
 	}
 	if store.count(http.MethodGet) < 8 {
 		t.Fatal("test did not exercise paginated S3 reads")
+	}
+}
+
+func TestS3ConversionChecksDirectDownloadMarkers(t *testing.T) {
+	_, out := archiveS3Store(t)
+	out.bucket, out.prefix, out.tilePath = "tiles", "direct", "{z}/{y}/{x}.{format}"
+	tile := maptile.Tile{Z: 2, X: 3, Y: 1}
+	body := tileDataPNG(t)
+	if err := out.saveContext(context.Background(), Tile{T: tile, C: body}, PNG); err != nil {
+		t.Fatal(err)
+	}
+	destination := filepath.Join(t.TempDir(), "checked.mbtiles")
+	if _, err := ConvertArchive(context.Background(), "s3://tiles/direct/", destination, ArchiveConvertOptions{S3: out}); err == nil || !strings.Contains(err.Error(), "input-tile-path") {
+		t.Fatalf("custom layout was silently read as XYZ: %v", err)
+	}
+	if _, err := os.Stat(destination); !os.IsNotExist(err) {
+		t.Fatal("mismatched source created a destination archive")
+	}
+	if _, err := ConvertArchive(context.Background(), "s3://tiles/direct/", destination, ArchiveConvertOptions{S3: out, InputTilePath: out.tilePath}); err != nil {
+		t.Fatal(err)
+	}
+	if got := archiveS3ReadMBTile(t, destination, 2, 3, 1); !bytes.Equal(got, body) {
+		t.Fatal("correctly configured direct S3 tile changed coordinates or bytes")
 	}
 }
 

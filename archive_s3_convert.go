@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -209,24 +210,29 @@ func archiveS3Download(ctx context.Context, out *s3Output, key, filename string)
 }
 
 func archiveS3ReadObject(ctx context.Context, out *s3Output, key string, limit int64) ([]byte, error) {
+	body, _, err := archiveS3ReadObjectInfo(ctx, out, key, limit)
+	return body, err
+}
+
+func archiveS3ReadObjectInfo(ctx context.Context, out *s3Output, key string, limit int64) ([]byte, map[string]string, error) {
 	request, cancel := context.WithTimeout(ctx, out.timeout)
 	defer cancel()
 	object, err := out.client.GetObject(request, &s3.GetObjectInput{Bucket: aws.String(out.bucket), Key: aws.String(key)})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer object.Body.Close()
 	if object.ContentLength != nil && *object.ContentLength > limit {
-		return nil, fmt.Errorf("S3 object %q exceeds %d bytes", key, limit)
+		return nil, nil, fmt.Errorf("S3 object %q exceeds %d bytes", key, limit)
 	}
 	body, err := io.ReadAll(io.LimitReader(object.Body, limit+1))
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if int64(len(body)) > limit {
-		return nil, fmt.Errorf("S3 object %q exceeds %d bytes", key, limit)
+		return nil, nil, fmt.Errorf("S3 object %q exceeds %d bytes", key, limit)
 	}
-	return body, nil
+	return body, object.Metadata, nil
 }
 
 func archiveS3Metadata(ctx context.Context, out *s3Output, prefix string) (map[string]string, bool, error) {
@@ -348,9 +354,26 @@ func archiveS3TilesToMBTiles(ctx context.Context, out *s3Output, prefix, filenam
 		if !matches {
 			return nil
 		}
-		body, err := archiveS3ReadObject(ctx, out, key, 256<<20)
+		body, identity, err := archiveS3ReadObjectInfo(ctx, out, key, maxTileDataBytes)
 		if err != nil {
 			return fmt.Errorf("read S3 tile %q: %w", key, err)
+		}
+		if hash := identity["tiler-path"]; hash != "" && hash != fmt.Sprintf("%x", sha256.Sum256([]byte(pattern))) {
+			return fmt.Errorf("S3 tile %q has a different layout; set -input-tile-path to its original template", key)
+		}
+		if xyz := identity["tiler-xyz"]; xyz != "" && xyz != fmt.Sprintf("%d/%d/%d", tile.Z, tile.X, tile.Y) {
+			return fmt.Errorf("S3 tile %q coordinates do not match the input tile path", key)
+		}
+		if stored := identity["tiler-format"]; stored != "" {
+			markedFormat, err := archiveFormat(stored)
+			if err != nil || markedFormat == "" {
+				return fmt.Errorf("S3 tile %q has invalid format metadata", key)
+			}
+			parsedFormat, err := archiveFormat(sourceFormat)
+			if err != nil || (parsedFormat != "" && parsedFormat != markedFormat) {
+				return fmt.Errorf("S3 tile %q format does not match its path", key)
+			}
+			sourceFormat = markedFormat
 		}
 		if sourceFormat == "" {
 			sourceFormat, err = archiveFormat(metadata["format"])
