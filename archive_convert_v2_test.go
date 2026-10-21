@@ -183,10 +183,10 @@ func TestArchiveV2AppendPreservesRegionAndUnionsMetadata(t *testing.T) {
 	regionA := t.TempDir()
 	regionB := t.TempDir()
 	archiveTestWrite(t, filepath.Join(regionA, "1", "0", "0.png"), red)
-	archiveTestWrite(t, filepath.Join(regionA, "metadata.json"), []byte(`{"name":"all-regions","bounds":"-170,5,-10,80","json":{"bounds":[-170,5,-10,80],"center":[-90,45,1],"minzoom":1,"maxzoom":1,"custom":"keep","custom_id":9007199254740993,"nested":{"id":9007199254740993}}}`))
+	archiveTestWrite(t, filepath.Join(regionA, "metadata.json"), []byte(`{"name":"all-regions","bounds":"-170,5,-10,80","flat_custom":"old","json":{"bounds":[-170,5,-10,80],"center":[-90,45,1],"minzoom":1,"maxzoom":1,"custom":"keep","custom_id":9007199254740993,"nested":{"id":9007199254740993}}}`))
 	archiveTestWrite(t, filepath.Join(regionB, "1", "0", "0.png"), green)
 	archiveTestWrite(t, filepath.Join(regionB, "2", "3", "3.png"), blue)
-	archiveTestWrite(t, filepath.Join(regionB, "metadata.json"), []byte(`{"name":"region-b","bounds":"100,-80,170,-5"}`))
+	archiveTestWrite(t, filepath.Join(regionB, "metadata.json"), []byte(`{"name":"region-b","bounds":"100,-80,170,-5","custom":"flat replacement","json":{"custom":"replace attempt","flat_custom":false,"new_flag":true,"new_nested":{"id":9007199254740993}}}`))
 	for _, kind := range []string{"mbtiles", "pmtiles", "file"} {
 		t.Run(kind, func(t *testing.T) {
 			output := filepath.Join(t.TempDir(), "combined."+kind)
@@ -246,6 +246,12 @@ func TestArchiveV2AppendPreservesRegionAndUnionsMetadata(t *testing.T) {
 			var raw map[string]json.RawMessage
 			if err := json.Unmarshal([]byte(metadata["json"]), &raw); err != nil || string(raw["custom_id"]) != "9007199254740993" || string(raw["nested"]) != `{"id":9007199254740993}` {
 				t.Errorf("custom integers rounded: %s, %v", metadata["json"], err)
+			}
+			if metadata["flat_custom"] != "old" && string(raw["flat_custom"]) != `"old"` {
+				t.Errorf("incoming JSON overrode an existing flat value: %v", metadata)
+			}
+			if string(raw["new_flag"]) != "true" || string(raw["new_nested"]) != `{"id":9007199254740993}` {
+				t.Errorf("new region's nonconflicting JSON fields were lost: %s", metadata["json"])
 			}
 			if kind == "file" {
 				body, err := os.ReadFile(filepath.Join(output, "sentinel.txt"))
@@ -499,16 +505,43 @@ func TestArchiveV2VectorRoundTripAndMetadataMerge(t *testing.T) {
 		t.Fatal(err)
 	}
 	output := filepath.Join(t.TempDir(), "tiles")
-	if _, err := convertLocalArchive(context.Background(), pmtiles, output, ArchiveConvertOptions{OutputTilePath: "{z}/{y}/{x}"}); err != nil {
+	if _, err := convertLocalArchive(context.Background(), pmtiles, output, ArchiveConvertOptions{OutputTilePath: "{z}/{y}/{x}", Metadata: map[string]string{"json": `{"custom":true}`}}); err != nil {
 		t.Fatal(err)
 	}
 	body, err := os.ReadFile(filepath.Join(output, "0", "0", "0"))
 	if err != nil || !bytes.Equal(body, raw) {
 		t.Fatalf("PBF not raw after extraction: %x %v", body, err)
 	}
+	directoryMetadata, err := archiveReadDirectoryMetadata(output)
+	var original map[string]json.RawMessage
+	if err != nil || json.Unmarshal([]byte(directoryMetadata["json"]), &original) != nil || len(original["vector_layers"]) == 0 {
+		t.Fatalf("custom JSON override erased the original PBF schema: %v, %v", directoryMetadata, err)
+	}
 	rearchive := filepath.Join(t.TempDir(), "vector-again.pmtiles")
-	if _, err := convertLocalArchive(context.Background(), output, rearchive, ArchiveConvertOptions{}); err != nil {
+	flatLayers := `[{"id":"test","fields":{"flat":"String"}}]`
+	jsonLayers := `[{"id":"test","fields":{"explicit":"Number"}}]`
+	if _, err := convertLocalArchive(context.Background(), output, rearchive, ArchiveConvertOptions{Metadata: map[string]string{"json": `{"vector_layers":` + jsonLayers + `}`, "vector_layers": flatLayers}}); err != nil {
 		t.Fatal(err)
+	}
+	_, _, tileJSON := archiveTestReadPM(t, rearchive)
+	fields := tileJSON["vector_layers"].([]interface{})[0].(map[string]interface{})["fields"].(map[string]interface{})
+	if tileJSON["custom"] != true || fields["flat"] != "String" || len(fields) != 1 {
+		t.Fatalf("explicit flat schema or preserved custom JSON lost priority: %v", tileJSON)
+	}
+	mbtiles := filepath.Join(t.TempDir(), "vector.mbtiles")
+	if _, err := convertLocalArchive(context.Background(), input, mbtiles, ArchiveConvertOptions{Metadata: map[string]string{"json": `{"vector_layers":` + jsonLayers + `}`}}); err != nil {
+		t.Fatal(err)
+	}
+	metadata, err := archiveWalkMB(context.Background(), mbtiles, func(int, uint32, uint32, []byte, string) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(metadata["json"]), &tileJSON); err != nil {
+		t.Fatal(err)
+	}
+	fields = tileJSON["vector_layers"].([]interface{})[0].(map[string]interface{})["fields"].(map[string]interface{})
+	if fields["explicit"] != "Number" || len(fields) != 1 {
+		t.Fatalf("source flat schema overrode explicit JSON schema: %v", tileJSON)
 	}
 	a := map[string]string{"format": "pbf", "json": `{"vector_layers":[{"id":"roads","fields":{"name":"String"},"minzoom":5,"maxzoom":8}]}`}
 	b := map[string]string{"format": "pbf", "vector_layers": `[{"id":"roads","fields":{"class":"String"},"minzoom":2,"maxzoom":10},{"id":"water","fields":{}}]`}

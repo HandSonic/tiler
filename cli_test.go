@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"image/color"
 	"image/jpeg"
@@ -20,9 +21,12 @@ import (
 func TestCLIConvertWritesRequestedFormat(t *testing.T) {
 	input := filepath.Join(t.TempDir(), "xyz")
 	archiveTestWrite(t, filepath.Join(input, "0", "0", "0.png"), archiveTestPNG(t, color.RGBA{G: 255, A: 255}))
+	archiveTestWrite(t, filepath.Join(input, "metadata.json"), []byte(`{"custom_bool":"old","json":{"source":"keep","custom_bool":true}}`))
+	metadataFile := filepath.Join(t.TempDir(), "metadata.json")
+	archiveTestWrite(t, metadataFile, []byte(`{"name":"metadata-name","custom_label":"label","custom_bool":false,"custom_array":[1,false],"custom_obj":{"id":9007199254740993},"custom_id":9007199254740993,"custom_null":null}`))
 	output := filepath.Join(t.TempDir(), "converted.mbtiles")
 	var stdout, stderr bytes.Buffer
-	if err := runCLI([]string{"convert", "-input", input, "-output", output, "-format", "jpg", "-name", "cli-conversion"}, &stdout, &stderr); err != nil {
+	if err := runCLI([]string{"convert", "-input", input, "-output", output, "-format", "jpg", "-name", "cli-conversion", "-metadata", metadataFile}, &stdout, &stderr); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(stdout.String(), "Converted 1 jpg tiles") {
@@ -43,6 +47,27 @@ func TestCLIConvertWritesRequestedFormat(t *testing.T) {
 	var name string
 	if err := db.QueryRow("select value from metadata where name='name'").Scan(&name); err != nil || name != "cli-conversion" {
 		t.Fatalf("archive name = %q, error %v", name, err)
+	}
+	var metadataJSON string
+	if err := db.QueryRow("select value from metadata where name='json'").Scan(&metadataJSON); err != nil {
+		t.Fatal(err)
+	}
+	var actual map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(metadataJSON), &actual); err != nil {
+		t.Fatal(err)
+	}
+	for key, want := range map[string]string{"source": `"keep"`, "custom_bool": "false", "custom_array": "[1,false]", "custom_obj": `{"id":9007199254740993}`, "custom_id": "9007199254740993", "custom_null": "null"} {
+		if string(actual[key]) != want {
+			t.Errorf("metadata %s changed value or JSON type: got %s, want %s", key, actual[key], want)
+		}
+	}
+	var label string
+	if err := db.QueryRow("select value from metadata where name='custom_label'").Scan(&label); err != nil || label != "label" {
+		t.Fatalf("string metadata = %q, error %v", label, err)
+	}
+	var shadowCount int
+	if err := db.QueryRow("select count(*) from metadata where name='custom_bool'").Scan(&shadowCount); err != nil || shadowCount != 0 {
+		t.Fatalf("old flat metadata still shadows explicit JSON: %d, %v", shadowCount, err)
 	}
 }
 

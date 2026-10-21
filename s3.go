@@ -176,13 +176,13 @@ func (out *s3Output) validateTileIdentity(metadata map[string]string, tile mapti
 	if xyz := metadata["tiler-xyz"]; xyz != "" && xyz != fmt.Sprintf("%d/%d/%d", tile.Z, tile.X, tile.Y) {
 		return fmt.Errorf("existing S3 tile coordinates do not match the requested tile")
 	}
-	if storedFormat := metadata["tiler-format"]; storedFormat != "" && !sameS3TileEncoding(storedFormat, format) {
+	if storedFormat := metadata["tiler-format"]; storedFormat != "" && !sameTileEncoding(storedFormat, format) {
 		return fmt.Errorf("existing S3 tile format does not match the requested format")
 	}
 	return nil
 }
 
-func sameS3TileEncoding(a, b string) bool {
+func sameTileEncoding(a, b string) bool {
 	if strings.EqualFold(a, b) {
 		return true
 	}

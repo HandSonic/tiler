@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -201,8 +202,22 @@ func TestFailureManifestSaveLoadAndEmptyRepair(t *testing.T) {
 	if err := saved.Resolve(tile, manifestTestURL); err != nil {
 		t.Fatal(err)
 	}
+	if runtime.GOOS != "windows" {
+		if err := os.Chmod(path, 0640); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if err := saved.Save(path); err != nil {
 		t.Fatal(err)
+	}
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm() != 0640 {
+			t.Fatalf("replacement changed report permissions: %o", info.Mode().Perm())
+		}
 	}
 	after, err := os.ReadFile(path)
 	if err != nil {

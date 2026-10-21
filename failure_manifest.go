@@ -179,6 +179,10 @@ func (manifest *FailureManifest) Save(path string) error {
 	if len(encoded)+1 > maxFailureManifestBytes {
 		return fmt.Errorf("failure manifest exceeds 64 MiB; split the download into smaller jobs")
 	}
+	mode, err := replacementOutputMode(path)
+	if err != nil {
+		return fmt.Errorf("inspect failure manifest destination: %w", err)
+	}
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("create failure manifest directory: %w", err)
@@ -191,6 +195,10 @@ func (manifest *FailureManifest) Save(path string) error {
 	if _, err := file.Write(append(encoded, '\n')); err != nil {
 		file.Close()
 		return fmt.Errorf("write failure manifest: %w", err)
+	}
+	if err := file.Chmod(mode); err != nil {
+		file.Close()
+		return fmt.Errorf("preserve failure manifest permissions: %w", err)
 	}
 	if err := file.Sync(); err != nil {
 		file.Close()

@@ -58,7 +58,7 @@ func TestResumeAcceptsExistingDatabasePathAlias(t *testing.T) {
 	viper.Set("output.failure_file", manifestPath)
 	var available atomic.Bool
 	var requests atomic.Int32
-	body := tileDataPNG(t)
+	body := tileDataJPEG(t)
 	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests.Add(1)
 		if !available.Load() {
@@ -68,27 +68,61 @@ func TestResumeAcceptsExistingDatabasePathAlias(t *testing.T) {
 		w.Write(body)
 	}))
 	defer source.Close()
-	first := newRegressionTask(t, source.URL)
+	first := NewTask([]Layer{{Zoom: 0, Collection: orb.Collection{orb.Point{0, 0}}}}, TileMap{Name: "alias-jpeg", URL: source.URL, Format: "jpeg"})
+	t.Cleanup(first.Cancel)
 	if err := first.Download(); err == nil {
 		t.Fatal("initial unavailable tile was accepted")
 	}
+	// Legacy MBTiles and failure reports can use either JPEG spelling.
+	setLegacyFormat := func() {
+		t.Helper()
+		db, err := archiveOpenSQLite(first.File, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = db.Exec("UPDATE metadata SET value='jpeg' WHERE name='format'")
+		db.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	setLegacyFormat()
+	manifest, err := LoadFailureManifest(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	available.Store(true)
+	tm := first.TileMap
+	tm.Format = JPG
+	repair, err := NewRepairTask(first.Layers, tm, manifest, manifestPath)
+	if err != nil {
+		t.Fatalf("repair rejected the same JPEG encoding: %v", err)
+	}
+	t.Cleanup(repair.Cancel)
+	if err := repair.Download(); err != nil {
+		t.Fatal(err)
+	}
+	setLegacyFormat()
 	alias := filepath.Join(dir, "alias.mbtiles")
 	if err := os.Link(first.File, alias); err != nil {
 		t.Skipf("hard links unavailable: %v", err)
 	}
-	available.Store(true)
 	viper.Set("output.resume", true)
 	viper.Set("output.name", "alias")
-	resumed := newRegressionTask(t, source.URL)
+	resumed := NewTask(first.Layers, tm)
+	t.Cleanup(resumed.Cancel)
 	if err := resumed.Download(); err != nil {
 		t.Fatalf("resume rejected the same existing database through another name: %v", err)
 	}
 	if requests.Load() != 2 || !bytes.Equal(repairIntegrationReadTile(t, "mbtiles", first.File, maptile.Tile{Z: 0}), body) {
 		t.Fatalf("resume did not repair the original database: requests=%d", requests.Load())
 	}
-	manifest, err := LoadFailureManifest(manifestPath)
+	manifest, err = LoadFailureManifest(manifestPath)
 	if err != nil || manifest.Len() != 0 {
 		t.Fatalf("resume did not clear the failure report: %v", err)
+	}
+	if metadata := appendReadMetadata(t, "mbtiles", first.File); metadata["format"] != JPG {
+		t.Fatalf("MBTiles JPEG format was not canonicalized: %v", metadata)
 	}
 	// Equal contents in a different file do not establish target identity.
 	copyPath := filepath.Join(dir, "copy.mbtiles")
@@ -100,7 +134,8 @@ func TestResumeAcceptsExistingDatabasePathAlias(t *testing.T) {
 		t.Fatal(err)
 	}
 	viper.Set("output.name", "copy")
-	different := newRegressionTask(t, source.URL)
+	different := NewTask(first.Layers, tm)
+	t.Cleanup(different.Cancel)
 	if err := different.Download(); err == nil || !strings.Contains(err.Error(), "different output target") || requests.Load() != 2 {
 		t.Fatalf("different database was accepted as an alias: %v, requests=%d", err, requests.Load())
 	}

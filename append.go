@@ -100,6 +100,9 @@ func (task *Task) validateFileResumeMetadata() error {
 }
 
 func validateDownloadMBMetadata(metadata map[string]string) error {
+	if sameTileEncoding(strings.TrimSpace(metadata["format"]), JPG) {
+		metadata["format"] = JPG
+	}
 	if metadata["type"] != "overlay" && metadata["type"] != "baselayer" {
 		metadata["type"] = "baselayer"
 	}
@@ -182,7 +185,7 @@ func mergeDownloadMetadata(existing, incoming map[string]string, fileOutput bool
 	}
 	if existing != nil {
 		oldFormat := strings.ToLower(strings.TrimSpace(existing["format"]))
-		if oldFormat != "" && oldFormat != format {
+		if oldFormat != "" && oldFormat != format && (fileOutput || !sameTileEncoding(oldFormat, format)) {
 			return nil, fmt.Errorf("existing output tile format %q differs from %q; use a different output", oldFormat, format)
 		}
 		if !fileOutput && oldFormat == "" {

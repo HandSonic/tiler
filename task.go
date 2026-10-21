@@ -397,7 +397,7 @@ func (task *Task) SetupMBTileTables() error {
 		}
 		rows.Close()
 		if task.repairMode {
-			if strings.ToLower(strings.TrimSpace(previous["format"])) != strings.ToLower(strings.TrimSpace(task.TileMap.Format)) {
+			if !sameTileEncoding(strings.TrimSpace(previous["format"]), strings.TrimSpace(task.TileMap.Format)) {
 				return fmt.Errorf("repair target tile format differs from the failure manifest")
 			}
 			metadata = previous

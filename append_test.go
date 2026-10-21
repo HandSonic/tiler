@@ -168,18 +168,24 @@ func TestDownloadAppendFormatMismatchDoesNotChangeOutput(t *testing.T) {
 			viper.Set("output.name", "dataset")
 			viper.Set("output.append", true)
 			body := tileDataPNG(t)
+			firstFormat, nextFormat := PNG, JPG
+			if kind == "file" {
+				body = tileDataJPEG(t)
+				firstFormat, nextFormat = JPG, "jpeg"
+			}
 			var calls atomic.Int64
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				calls.Add(1)
 				w.Write(body)
 			}))
 			defer server.Close()
-			first := newRegressionTask(t, server.URL+"/{z}/{x}/{y}")
+			first := NewTask([]Layer{{Zoom: 0, Collection: orb.Collection{orb.Point{0, 0}}}}, TileMap{Name: "format-check", URL: server.URL + "/{z}/{x}/{y}", Format: firstFormat})
+			t.Cleanup(first.Cancel)
 			if err := first.Download(); err != nil {
 				t.Fatal(err)
 			}
 			metadata := appendReadMetadata(t, kind, first.File)
-			next := NewTask(first.Layers, TileMap{Name: "different map", Format: JPG})
+			next := NewTask(first.Layers, TileMap{Name: "different map", Format: nextFormat})
 			t.Cleanup(next.Cancel)
 			if err := next.Download(); err == nil || !strings.Contains(err.Error(), "format") {
 				t.Fatalf("format mismatch result=%v", err)

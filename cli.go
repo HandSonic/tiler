@@ -109,12 +109,30 @@ func runConvertCLI(args []string, stdout, stderr io.Writer) error {
 		if err := json.Unmarshal(body, &values); err != nil || values == nil {
 			return fmt.Errorf("metadata must be a JSON object")
 		}
+		extensions := make(map[string]json.RawMessage)
 		for key, value := range values {
-			var text string
-			if json.Unmarshal(value, &text) != nil {
-				text = string(value)
+			var text *string
+			decodeErr := json.Unmarshal(value, &text)
+			if decodeErr == nil && text != nil {
+				metadata[key] = *text
+			} else if archiveFlatMetadataKey(key) {
+				metadata[key] = string(value)
+				if decodeErr == nil {
+					metadata[key] = ""
+				}
+			} else {
+				extensions[key] = value
 			}
-			metadata[key] = text
+		}
+		if len(extensions) > 0 {
+			encoded, err := json.Marshal(extensions)
+			if err != nil {
+				return err
+			}
+			metadata["json"], err = mergeArchiveJSON(string(encoded), metadata["json"])
+			if err != nil {
+				return err
+			}
 		}
 	}
 	if *name != "" {

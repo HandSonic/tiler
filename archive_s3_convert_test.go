@@ -470,8 +470,8 @@ func TestS3ConversionPBFAndExtensionlessTiles(t *testing.T) {
 		}
 	})
 	store.put("source/vector/0/0/0", vector)
-	store.put("source/vector/metadata.json", []byte(`{"format":"pbf","tile_path":"{z}/{x}/{y}","vector_layers":[{"id":"test","fields":{}}]}`))
-	if _, err := ConvertArchive(context.Background(), "s3://source/vector/", "s3://maps/vector.pmtiles", ArchiveConvertOptions{S3: out}); err != nil {
+	store.put("source/vector/metadata.json", []byte(`{"format":"pbf","tile_path":"{z}/{x}/{y}","json":{"vector_layers":[{"id":"test","fields":{}}],"source":true}}`))
+	if _, err := ConvertArchive(context.Background(), "s3://source/vector/", "s3://maps/vector.pmtiles", ArchiveConvertOptions{S3: out, Metadata: map[string]string{"json": `{"custom":false}`}}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := ConvertArchive(context.Background(), "s3://maps/vector.pmtiles", "s3://maps/extracted/", ArchiveConvertOptions{S3: out, OutputTilePath: "{z}/{y}/{x}"}); err != nil {
@@ -484,6 +484,11 @@ func TestS3ConversionPBFAndExtensionlessTiles(t *testing.T) {
 	body, err := os.ReadFile(filepath.Join(local, "0", "0", "0"))
 	if err != nil || !bytes.Equal(body, vector) {
 		t.Fatalf("PBF/gzip round trip mismatch: %x, %v", body, err)
+	}
+	metadata, err := archiveReadDirectoryMetadata(local)
+	var object map[string]json.RawMessage
+	if err != nil || json.Unmarshal([]byte(metadata["json"]), &object) != nil || string(object["source"]) != "true" || string(object["custom"]) != "false" || len(object["vector_layers"]) == 0 {
+		t.Fatalf("S3 JSON override lost source schema or extensions: %v, %v", metadata, err)
 	}
 }
 

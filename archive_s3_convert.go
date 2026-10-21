@@ -443,8 +443,8 @@ func archiveS3TilesToMBTiles(ctx context.Context, out *s3Output, prefix, filenam
 	if err != nil {
 		return result, err
 	}
-	for key, value := range opts.Metadata {
-		metadata[key] = value
+	if err := archiveApplyMetadata(metadata, opts.Metadata); err != nil {
+		return result, err
 	}
 	target, err := archiveFormat(opts.Format)
 	if err != nil {
@@ -776,7 +776,7 @@ func archiveS3ConvertToTiles(ctx context.Context, out *s3Output, input, prefix, 
 					return fmt.Errorf("read existing S3 tile %q: %w", key, err)
 				}
 				format, err := archiveS3InferFormat(body, contentEncoding)
-				if err != nil || !sameS3TileEncoding(format, result.Format) {
+				if err != nil || !sameTileEncoding(format, result.Format) {
 					return fmt.Errorf("existing S3 tile %q has a different or invalid format; use a new output prefix", key)
 				}
 			}

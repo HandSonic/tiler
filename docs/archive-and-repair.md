@@ -113,7 +113,7 @@ S3 输入支持未编码对象及 `Content-Encoding: gzip` 的瓦片、元数据
 }
 ```
 
-请填写瓦片中实际存在的图层 ID 和字段。也可在元数据的 `json` 字段提供包含 `vector_layers` 的 JSON；下载时 `tm.json` 会存入该字段。规范见 [PMTiles v3 JSON metadata](https://github.com/protomaps/PMTiles/blob/main/spec/v3/spec.md#5-json-metadata)。
+请填写瓦片中实际存在的图层 ID 和字段。也可在元数据的 `json` 字段提供包含 `vector_layers` 的 JSON；下载时 `tm.json` 会存入该字段。`convert -metadata` 的自定义布尔值、数组、对象、数字和 null 保留 JSON 类型。追加时扩展 JSON 保留旧键值、补入新键；显式 `-metadata` 按键覆盖，未提及的键保留。`vector_layers` 追加仍合并图层描述，显式指定时替换整个描述。规范见 [PMTiles v3 JSON metadata](https://github.com/protomaps/PMTiles/blob/main/spec/v3/spec.md#5-json-metadata)。
 
 构建归档逐瓦片处理，排序使用临时 SQLite 索引。可能同时存在临时 MBTiles、索引及归档，需预留相应磁盘空间；成功、失败或正常取消后清理。S3 输入也通过临时归档/数据库处理，不额外落单张图片。只有明确输出散瓦片目录时才生成单张图片。直接下载 MBTiles 同样在内存处理后写入数据库，可能短暂出现 SQLite 事务日志。
 

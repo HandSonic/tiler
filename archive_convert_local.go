@@ -278,8 +278,8 @@ func convertLocalArchive(ctx context.Context, input, output string, opts Archive
 	if metadata == nil {
 		metadata = make(map[string]string)
 	}
-	for key, value := range opts.Metadata {
-		metadata[key] = value
+	if err := archiveApplyMetadata(metadata, opts.Metadata); err != nil {
+		return result, err
 	}
 	delete(metadata, "tile_path")
 	if opts.Append && existing {
@@ -819,6 +819,13 @@ func archiveMergeMetadata(existing, incoming map[string]string) (map[string]stri
 			result[key] = value
 		}
 	}
+	if existing["json"] != "" || incoming["json"] != "" {
+		merged, err := mergeArchiveJSON(existing["json"], incoming["json"])
+		if err != nil {
+			return nil, err
+		}
+		result["json"] = merged
+	}
 	if a, err := archiveNumbers(existing["bounds"], 4); err == nil {
 		if b, e := archiveNumbers(incoming["bounds"], 4); e == nil {
 			if b[0] < a[0] {
@@ -840,7 +847,7 @@ func archiveMergeMetadata(existing, incoming map[string]string) (map[string]stri
 	// that happen to be absent from the first region's metadata.
 	layers := map[string]map[string]interface{}{}
 	var order []string
-	for _, metadata := range []map[string]string{existing, incoming} {
+	for index, metadata := range []map[string]string{existing, incoming} {
 		object := map[string]interface{}{}
 		if metadata["json"] != "" {
 			if err := json.Unmarshal([]byte(metadata["json"]), &object); err != nil {
@@ -848,6 +855,14 @@ func archiveMergeMetadata(existing, incoming map[string]string) (map[string]stri
 			}
 			if object == nil {
 				return nil, fmt.Errorf("metadata json must be an object")
+			}
+		}
+		if index == 0 {
+			// Keep old JSON extensions ahead of newly supplied flat values.
+			for key := range object {
+				if !archiveFlatMetadataKey(key) && existing[key] == "" {
+					delete(result, key)
+				}
 			}
 		}
 		if text := metadata["vector_layers"]; text != "" {
@@ -888,4 +903,57 @@ func archiveMergeMetadata(existing, incoming map[string]string) (map[string]stri
 	}
 	delete(result, "tile_path")
 	return result, nil
+}
+
+func archiveApplyMetadata(metadata, overrides map[string]string) error {
+	for key, value := range overrides {
+		if key == "json" && strings.TrimSpace(value) != "" {
+			merged, err := mergeArchiveJSON(value, metadata[key])
+			if err != nil {
+				return err
+			}
+			var fields map[string]json.RawMessage
+			if err := json.Unmarshal([]byte(value), &fields); err != nil {
+				return err
+			}
+			for name := range fields {
+				if !archiveFlatMetadataKey(name) || name == "vector_layers" {
+					if _, explicitFlat := overrides[name]; !explicitFlat {
+						delete(metadata, name)
+					}
+				}
+			}
+			value = merged
+		}
+		metadata[key] = value
+	}
+	return nil
+}
+
+// The first object wins conflicts; the second only supplies missing keys.
+func mergeArchiveJSON(preferred, fallback string) (string, error) {
+	object := make(map[string]json.RawMessage)
+	for _, text := range []string{fallback, preferred} {
+		if strings.TrimSpace(text) == "" {
+			continue
+		}
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(text), &fields); err != nil || fields == nil {
+			return "", fmt.Errorf("metadata json must be a JSON object")
+		}
+		for key, value := range fields {
+			object[key] = value
+		}
+	}
+	encoded, err := json.Marshal(object)
+	return string(encoded), err
+}
+
+// Existing standard/project fields use string storage or dataset-derived values.
+func archiveFlatMetadataKey(key string) bool {
+	switch key {
+	case "name", "description", "attribution", "version", "type", "format", "bounds", "center", "minzoom", "maxzoom", "scheme", "tile_path", "vector_layers", "json", "id", "basename", "pixel_scale":
+		return true
+	}
+	return false
 }

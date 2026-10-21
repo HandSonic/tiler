@@ -24,12 +24,16 @@ func NewRepairTaskContext(ctx context.Context, layers []Layer, tm TileMap, manif
 		return nil, fmt.Errorf("repair requires a failure manifest")
 	}
 	data := manifest.Snapshot()
-	if data.MapName != tm.Name || data.Format != strings.ToLower(strings.TrimSpace(tm.Format)) {
-		return nil, fmt.Errorf("repair map name and tile format must match the manifest")
-	}
 	target, ok := manifest.Target()
 	if !ok {
 		return nil, fmt.Errorf("repair manifest does not identify the original output target")
+	}
+	sameFormat := data.Format == strings.ToLower(strings.TrimSpace(tm.Format))
+	if target.Kind == "mbtiles" {
+		sameFormat = sameTileEncoding(data.Format, strings.TrimSpace(tm.Format))
+	}
+	if data.MapName != tm.Name || !sameFormat {
+		return nil, fmt.Errorf("repair map name and tile format must match the manifest")
 	}
 	if target.Kind != strings.ToLower(viper.GetString("output.format")) {
 		return nil, fmt.Errorf("repair output.format must match the manifest target %q", target.Kind)
@@ -242,7 +246,11 @@ func (task *Task) setupFailureManifest() error {
 				return fmt.Errorf("read existing failure manifest before continuing: %w", err)
 			}
 			data := previous.Snapshot()
-			if data.MapName != task.Name || data.Format != strings.ToLower(strings.TrimSpace(task.TileMap.Format)) {
+			sameFormat := data.Format == strings.ToLower(strings.TrimSpace(task.TileMap.Format))
+			if task.outformat == "mbtiles" {
+				sameFormat = sameTileEncoding(data.Format, strings.TrimSpace(task.TileMap.Format))
+			}
+			if data.MapName != task.Name || !sameFormat {
 				return fmt.Errorf("existing failure manifest belongs to a different map or format; choose a separate output.failure_file")
 			}
 			oldTarget, oldOK := previous.Target()
