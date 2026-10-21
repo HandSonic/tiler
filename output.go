@@ -22,7 +22,11 @@ func (task *Task) saveFileMetadata() error {
 	if task.File == "" {
 		return fmt.Errorf("file output directory is required for metadata")
 	}
-	data, err := json.MarshalIndent(task.MetaItems(), "", "  ")
+	metadata, err := task.fileMetadataForDownload()
+	if err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(metadata, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encode file metadata: %w", err)
 	}
@@ -93,7 +97,11 @@ func (task *Task) tileExists(ctx context.Context, tile maptile.Tile) (bool, erro
 		}
 		return err == nil, err
 	default:
-		info, err := os.Stat(filepath.Join(task.File, fmt.Sprint(tile.Z), fmt.Sprint(tile.X), fmt.Sprintf("%d.%s", tile.Y, task.TileMap.Format)))
+		filename, err := task.fileTilePath(tile)
+		if err != nil {
+			return false, err
+		}
+		info, err := os.Stat(filename)
 		if os.IsNotExist(err) {
 			return false, nil
 		}
@@ -102,4 +110,12 @@ func (task *Task) tileExists(ctx context.Context, tile maptile.Tile) (bool, erro
 		}
 		return info.Mode().IsRegular() && info.Size() > 0, nil
 	}
+}
+
+func (task *Task) fileTilePath(tile maptile.Tile) (string, error) {
+	relative, err := renderTilePath(task.tilePath, tile, task.TileMap.Format)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(task.File, filepath.FromSlash(relative)), nil
 }

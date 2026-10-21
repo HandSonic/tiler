@@ -28,6 +28,7 @@ type FailureTarget struct {
 	Path                string `json:"path,omitempty"`
 	Bucket              string `json:"bucket,omitempty"`
 	Prefix              string `json:"prefix,omitempty"`
+	TilePath            string `json:"tile_path,omitempty"`
 	EndpointFingerprint string `json:"endpoint_fingerprint,omitempty"`
 }
 
@@ -322,6 +323,13 @@ func validateFailureFormat(format string) error {
 }
 
 func validateFailureTarget(target FailureTarget) error {
+	if target.Kind == "file" || target.Kind == "s3" {
+		if _, err := normalizeTilePath(target.TilePath); err != nil {
+			return fmt.Errorf("invalid failure target tile_path: %w", err)
+		}
+	} else if target.TilePath != "" {
+		return fmt.Errorf("tile_path applies only to file or S3 failure targets")
+	}
 	switch target.Kind {
 	case "file", "mbtiles":
 		if strings.TrimSpace(target.Path) == "" || target.Bucket != "" || target.Prefix != "" || target.EndpointFingerprint != "" {

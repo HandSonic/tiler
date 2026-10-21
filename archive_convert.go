@@ -22,9 +22,14 @@ import (
 // ArchiveConvertOptions controls the target archive. Format, when set, is the
 // target tile encoding; PNG/JPEG tiles are actually transcoded when necessary.
 type ArchiveConvertOptions struct {
-	Format    string
-	Overwrite bool
-	Metadata  map[string]string
+	Format         string
+	Overwrite      bool
+	Metadata       map[string]string
+	InputTilePath  string
+	OutputTilePath string
+	Append         bool
+	OutputKind     string
+	S3             *s3Output
 }
 
 type ArchiveConvertResult struct {
@@ -83,91 +88,6 @@ func archiveCoordinate(z int64, x, y int64) error {
 		return fmt.Errorf("invalid tile coordinate z=%d x=%d y=%d (expected z 0..30 and x/y within the zoom grid)", z, x, y)
 	}
 	return nil
-}
-
-// ConvertArchive converts an XYZ directory or an MBTiles file into MBTiles or
-// PMTiles v3. Large tile payloads are processed one at a time; PMTiles ordering
-// uses a temporary SQLite index, rather than an in-memory set of all tiles.
-func ConvertArchive(ctx context.Context, input, output string, opts ArchiveConvertOptions) (ArchiveConvertResult, error) {
-	var result ArchiveConvertResult
-	if err := ctx.Err(); err != nil {
-		return result, err
-	}
-	target := strings.ToLower(filepath.Ext(output))
-	if target != ".mbtiles" && target != ".pmtiles" {
-		return result, fmt.Errorf("output must end in .mbtiles or .pmtiles")
-	}
-	format, err := archiveFormat(opts.Format)
-	if err != nil {
-		return result, err
-	}
-	info, err := os.Stat(input)
-	if err != nil {
-		return result, fmt.Errorf("open archive input: %w", err)
-	}
-	if !info.IsDir() && !info.Mode().IsRegular() {
-		return result, fmt.Errorf("archive input must be an XYZ directory or MBTiles file")
-	}
-	if dst, err := os.Lstat(output); err == nil {
-		if !opts.Overwrite {
-			return result, fmt.Errorf("output already exists: %s (use -overwrite to replace it)", output)
-		}
-		if !dst.Mode().IsRegular() {
-			return result, fmt.Errorf("output must be a regular file, not a directory or symlink")
-		}
-		if os.SameFile(info, dst) {
-			return result, fmt.Errorf("input and output refer to the same file")
-		}
-	} else if !os.IsNotExist(err) {
-		return result, err
-	}
-	outputAbs, err := filepath.Abs(output)
-	if err != nil {
-		return result, err
-	}
-	if err := os.MkdirAll(filepath.Dir(outputAbs), 0755); err != nil {
-		return result, err
-	}
-	work, err := os.MkdirTemp(filepath.Dir(outputAbs), ".tiler-convert-*")
-	if err != nil {
-		return result, err
-	}
-	defer os.RemoveAll(work)
-	staged := filepath.Join(work, "archive"+target)
-	if info.IsDir() {
-		mbtiles := staged
-		if target == ".pmtiles" {
-			mbtiles = filepath.Join(work, "input.mbtiles")
-		}
-		result, err = archiveDirectoryToMBTiles(ctx, input, mbtiles, format, opts.Metadata)
-		if err != nil {
-			return result, err
-		}
-		if target == ".pmtiles" {
-			result, err = archiveMBTilesToPMTiles(ctx, mbtiles, staged, work, "", nil)
-		}
-	} else {
-		if target != ".pmtiles" {
-			return result, fmt.Errorf("MBTiles input requires a .pmtiles output; XYZ directories can produce either archive type")
-		}
-		result, err = archiveMBTilesToPMTiles(ctx, input, staged, work, format, opts.Metadata)
-	}
-	if err != nil {
-		return result, err
-	}
-	if err := ctx.Err(); err != nil {
-		return result, err
-	}
-	if opts.Overwrite {
-		if err := os.Rename(staged, outputAbs); err != nil {
-			return result, fmt.Errorf("publish archive: %w", err)
-		}
-	} else {
-		if err := archivePublishNoReplace(staged, outputAbs); err != nil {
-			return result, fmt.Errorf("publish archive without overwriting: %w", err)
-		}
-	}
-	return result, nil
 }
 
 func archiveOpenSQLite(path string, readOnly bool) (*sql.DB, error) {
@@ -239,125 +159,6 @@ func archiveReadDirectoryMetadata(dir string) (map[string]string, error) {
 	return metadata, nil
 }
 
-func archiveDirectoryToMBTiles(ctx context.Context, input, output, targetFormat string, overrides map[string]string) (result ArchiveConvertResult, err error) {
-	metadata, err := archiveReadDirectoryMetadata(input)
-	if err != nil {
-		return result, err
-	}
-	for k, v := range overrides {
-		metadata[k] = v
-	}
-	formatChosen := targetFormat != ""
-	if targetFormat == "" {
-		targetFormat, err = archiveFormat(metadata["format"])
-		if err != nil {
-			return result, err
-		}
-	}
-	db, err := archiveOpenSQLite(output, false)
-	if err != nil {
-		return result, err
-	}
-	defer func() {
-		closeErr := db.Close()
-		if err == nil {
-			err = closeErr
-		}
-	}()
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		return result, err
-	}
-	defer tx.Rollback()
-	for _, query := range []string{
-		"CREATE TABLE metadata (name TEXT PRIMARY KEY, value TEXT)",
-		"CREATE TABLE tiles (zoom_level INTEGER, tile_column INTEGER, tile_row INTEGER, tile_data BLOB, PRIMARY KEY(zoom_level,tile_column,tile_row))",
-	} {
-		if _, err = tx.ExecContext(ctx, query); err != nil {
-			return result, err
-		}
-	}
-	insert, err := tx.PrepareContext(ctx, "INSERT INTO tiles (zoom_level,tile_column,tile_row,tile_data) VALUES (?,?,?,?)")
-	if err != nil {
-		return result, err
-	}
-	defer insert.Close()
-	extent := archiveExtent{}
-	err = filepath.WalkDir(input, func(path string, entry os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if entry.Type()&os.ModeSymlink != 0 {
-			return fmt.Errorf("symlink is not supported in XYZ input: %s", path)
-		}
-		if entry.IsDir() {
-			return nil
-		}
-		extension := strings.TrimPrefix(strings.ToLower(filepath.Ext(entry.Name())), ".")
-		sourceFormat, parseErr := archiveFormat(extension)
-		if parseErr != nil || sourceFormat == "" {
-			return nil
-		} // metadata, failure manifests and unrelated files are not tiles.
-		relative, err := filepath.Rel(input, path)
-		if err != nil {
-			return err
-		}
-		parts := strings.Split(filepath.ToSlash(relative), "/")
-		if len(parts) != 3 {
-			return fmt.Errorf("invalid XYZ tile path %s: expected z/x/y.ext", relative)
-		}
-		z, ze := strconv.ParseInt(parts[0], 10, 64)
-		x, xe := strconv.ParseInt(parts[1], 10, 64)
-		y, ye := strconv.ParseInt(strings.TrimSuffix(parts[2], filepath.Ext(parts[2])), 10, 64)
-		if ze != nil || xe != nil || ye != nil {
-			return fmt.Errorf("invalid XYZ tile path %s: coordinates must be integers", relative)
-		}
-		if err := archiveCoordinate(z, x, y); err != nil {
-			return fmt.Errorf("%s: %w", relative, err)
-		}
-		if targetFormat == "" {
-			targetFormat = sourceFormat
-		} else if !formatChosen && sourceFormat != targetFormat {
-			return fmt.Errorf("mixed tile formats in XYZ input; set -format to choose the target encoding")
-		}
-		body, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		body, err = archivePrepareTileData(body, sourceFormat, targetFormat)
-		if err != nil {
-			return fmt.Errorf("tile %s: %w", relative, err)
-		}
-		tmsY := (int64(1) << uint(z)) - 1 - y
-		if _, err := insert.ExecContext(ctx, z, x, tmsY, body); err != nil {
-			return fmt.Errorf("insert XYZ tile %s (check for duplicate coordinates): %w", relative, err)
-		}
-		extent.add(int(z), uint32(x), uint32(y))
-		return nil
-	})
-	if err != nil {
-		return result, err
-	}
-	if extent.count == 0 {
-		return result, fmt.Errorf("XYZ input contains no supported tiles")
-	}
-	if err := archiveCompleteMetadata(metadata, targetFormat, filepath.Base(filepath.Clean(input)), extent); err != nil {
-		return result, err
-	}
-	for key, value := range metadata {
-		if _, err = tx.ExecContext(ctx, "INSERT INTO metadata(name,value) VALUES (?,?)", key, value); err != nil {
-			return result, err
-		}
-	}
-	if err = tx.Commit(); err != nil {
-		return result, err
-	}
-	return ArchiveConvertResult{Tiles: extent.count, Format: targetFormat}, nil
-}
-
 func archiveReadMBMetadata(ctx context.Context, tx *sql.Tx) (map[string]string, error) {
 	rows, err := tx.QueryContext(ctx, "SELECT name,value FROM metadata")
 	if err != nil {
@@ -422,6 +223,21 @@ func archiveCompleteMetadata(metadata map[string]string, format, name string, ex
 }
 
 func archiveNumbers(text string, count int) ([]float64, error) {
+	if strings.HasPrefix(strings.TrimSpace(text), "[") {
+		var result []float64
+		if err := json.Unmarshal([]byte(text), &result); err != nil {
+			return nil, fmt.Errorf("invalid coordinate array: %w", err)
+		}
+		if len(result) != count {
+			return nil, fmt.Errorf("expected %d coordinate values", count)
+		}
+		for _, value := range result {
+			if math.IsNaN(value) || math.IsInf(value, 0) {
+				return nil, fmt.Errorf("coordinate values must be finite")
+			}
+		}
+		return result, nil
+	}
 	parts := strings.Split(text, ",")
 	if len(parts) != count {
 		return nil, fmt.Errorf("expected %d comma-separated numbers", count)

@@ -36,8 +36,11 @@ func TestSaveFileMetadata(t *testing.T) {
 	if err := json.Unmarshal(data, &got); err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(got, task.MetaItems()) {
-		t.Errorf("metadata = %v; want %v", got, task.MetaItems())
+	want := task.MetaItems()
+	want["tile_path"] = defaultTilePath
+	want["scheme"] = "xyz"
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("metadata = %v; want %v", got, want)
 	}
 	for key, want := range map[string]string{
 		"bounds":  "10.000000,20.000000,50.000000,60.000000",

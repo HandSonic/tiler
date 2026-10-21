@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -44,8 +45,14 @@ func runCLI(args []string, stdout, stderr io.Writer) error {
 func runConvertCLI(args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("convert", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	input := fs.String("input", "", "XYZ directory or MBTiles input path")
-	output := fs.String("output", "", "destination .mbtiles or .pmtiles path")
+	input := fs.String("input", "", "tile directory, MBTiles, PMTiles or s3:// input")
+	output := fs.String("output", "", "tile directory, .mbtiles, .pmtiles or s3:// destination")
+	config := fs.String("c", "", "S3 configuration file (defaults to conf.toml for S3 URLs)")
+	inputPath := fs.String("input-tile-path", "", "input tile layout (defaults to metadata or XYZ)")
+	outputPath := fs.String("tile-path", "", "output tile layout (defaults to {z}/{x}/{y}.{format})")
+	outputKind := fs.String("output-type", "", "output type: file, mbtiles or pmtiles; otherwise inferred")
+	appendTiles := fs.Bool("append", false, "merge into an existing destination and preserve overlapping tiles")
+	metadataFile := fs.String("metadata", "", "additional TileJSON metadata JSON file")
 	format := fs.String("format", "", "tile format override: png, jpg, pbf or webp")
 	name := fs.String("name", "", "optional archive name")
 	overwrite := fs.Bool("overwrite", false, "replace an existing destination after conversion succeeds")
@@ -55,13 +62,55 @@ func runConvertCLI(args []string, stdout, stderr io.Writer) error {
 	if *input == "" || *output == "" || fs.NArg() != 0 {
 		return fmt.Errorf("convert requires -input and -output")
 	}
+	if *overwrite && *appendTiles {
+		return fmt.Errorf("choose either -append or -overwrite")
+	}
+	if *config != "" || strings.HasPrefix(strings.ToLower(*input), "s3://") || strings.HasPrefix(strings.ToLower(*output), "s3://") {
+		if *config == "" {
+			*config = "conf.toml"
+		}
+		if err := initConf(*config); err != nil {
+			return err
+		}
+	}
 	metadata := map[string]string{}
+	if *config != "" && viper.GetString("tm.json") != "" {
+		metadata["json"] = viper.GetString("tm.json")
+	}
+	if *metadataFile != "" {
+		file, err := os.Open(*metadataFile)
+		if err != nil {
+			return err
+		}
+		body, err := io.ReadAll(io.LimitReader(file, 16*1024*1024+1))
+		closeErr := file.Close()
+		if err != nil {
+			return err
+		}
+		if closeErr != nil {
+			return closeErr
+		}
+		if len(body) > 16*1024*1024 {
+			return fmt.Errorf("metadata exceeds 16 MiB")
+		}
+		var values map[string]json.RawMessage
+		if err := json.Unmarshal(body, &values); err != nil || values == nil {
+			return fmt.Errorf("metadata must be a JSON object")
+		}
+		for key, value := range values {
+			var text string
+			if json.Unmarshal(value, &text) != nil {
+				text = string(value)
+			}
+			metadata[key] = text
+		}
+	}
 	if *name != "" {
 		metadata["name"] = *name
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	result, err := ConvertArchive(ctx, *input, *output, ArchiveConvertOptions{Format: *format, Overwrite: *overwrite, Metadata: metadata})
+	result, err := ConvertArchive(ctx, *input, *output, ArchiveConvertOptions{Format: *format, Overwrite: *overwrite, Append: *appendTiles, Metadata: metadata, InputTilePath: *inputPath, OutputTilePath: *outputPath, OutputKind: *outputKind})
 	if err != nil {
 		return err
 	}

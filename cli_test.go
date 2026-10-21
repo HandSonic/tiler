@@ -132,3 +132,43 @@ func TestCLIHelpAndInvalidArguments(t *testing.T) {
 		}
 	}
 }
+
+func TestCLIAppendAndPMTilesDirectoryRoundTrip(t *testing.T) {
+	directory := t.TempDir()
+	a, b := filepath.Join(directory, "a"), filepath.Join(directory, "b")
+	first := archiveTestPNG(t, color.RGBA{R: 255, A: 255})
+	second := archiveTestPNG(t, color.RGBA{B: 255, A: 255})
+	archiveTestWrite(t, filepath.Join(a, "0", "0", "0.png"), first)
+	archiveTestWrite(t, filepath.Join(b, "2", "3", "1.png"), second)
+	mb, pm := filepath.Join(directory, "all.mbtiles"), filepath.Join(directory, "all.pmtiles")
+	files, roundtrip := filepath.Join(directory, "files"), filepath.Join(directory, "roundtrip.mbtiles")
+	metadata := filepath.Join(directory, "extra.json")
+	archiveTestWrite(t, metadata, []byte(`{"description":"two regions"}`))
+	for _, args := range [][]string{
+		{"convert", "-input", a, "-output", mb},
+		{"convert", "-input", b, "-output", mb, "-append", "-metadata", metadata},
+		{"convert", "-input", mb, "-output", pm},
+		{"convert", "-input", pm, "-output", files, "-output-type", "file", "-tile-path", "{z}/{y}/{x}"},
+		{"convert", "-input", files, "-output", roundtrip},
+	} {
+		if err := runCLI(args, &bytes.Buffer{}, &bytes.Buffer{}); err != nil {
+			t.Fatalf("%v: %v", args, err)
+		}
+	}
+	got, err := os.ReadFile(filepath.Join(files, "2", "1", "3"))
+	if err != nil || !bytes.Equal(got, second) {
+		t.Fatalf("custom no-extension layout: %v", err)
+	}
+	db, err := sql.Open("sqlite3", roundtrip)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var count int
+	if err := db.QueryRow("select count(*) from tiles").Scan(&count); err != nil || count != 2 {
+		t.Fatalf("A/B roundtrip lost tiles: count=%d err=%v", count, err)
+	}
+	if err := db.QueryRow("select tile_data from tiles where zoom_level=0 and tile_column=0 and tile_row=0").Scan(&got); err != nil || !bytes.Equal(got, first) {
+		t.Fatalf("append changed original region A: %v", err)
+	}
+}

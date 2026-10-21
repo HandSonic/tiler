@@ -26,11 +26,14 @@ func saveToMBTile(tile Tile, db *sql.DB) error {
 }
 
 func saveToFiles(tile Tile, task *Task) error {
-	dir := filepath.Join(task.File, fmt.Sprintf(`%d`, tile.T.Z), fmt.Sprintf(`%d`, tile.T.X))
+	fileName, err := task.fileTilePath(tile.T)
+	if err != nil {
+		return err
+	}
+	dir := filepath.Dir(fileName)
 	if err := os.MkdirAll(dir, os.ModePerm); err != nil {
 		return err
 	}
-	fileName := filepath.Join(dir, fmt.Sprintf(`%d.%s`, tile.T.Y, task.TileMap.Format))
 	// A canceled or interrupted write must not become a resumable partial tile.
 	file, err := os.CreateTemp(dir, ".tile-*")
 	if err != nil {

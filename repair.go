@@ -27,6 +27,19 @@ func NewRepairTask(layers []Layer, tm TileMap, manifest *FailureManifest, manife
 	if target.Kind != strings.ToLower(viper.GetString("output.format")) {
 		return nil, fmt.Errorf("repair output.format must match the manifest target %q", target.Kind)
 	}
+	if target.Kind == "file" || target.Kind == "s3" {
+		current, err := normalizeTilePath(viper.GetString("output.tile_path"))
+		if err != nil {
+			return nil, err
+		}
+		original, err := normalizeTilePath(target.TilePath)
+		if err != nil {
+			return nil, err
+		}
+		if current != original {
+			return nil, fmt.Errorf("repair output.tile_path must match the original manifest target")
+		}
+	}
 	var s3Destination *s3Output
 	switch target.Kind {
 	case "file", "mbtiles":
@@ -119,6 +132,9 @@ func (task *Task) resolveTileFailure(tile maptile.Tile, source string) {
 
 func (task *Task) setupFailureManifest() error {
 	target := FailureTarget{Kind: task.outformat}
+	if task.outformat == "file" || task.outformat == "s3" {
+		target.TilePath = task.tilePath
+	}
 	if task.outformat == "s3" {
 		target.Bucket, target.Prefix = task.s3.bucket, task.s3.prefix
 		target.EndpointFingerprint = task.s3.endpointFingerprint
@@ -157,6 +173,21 @@ func (task *Task) setupFailureManifest() error {
 		if strings.EqualFold(path, metadata) {
 			return fmt.Errorf("failure manifest cannot replace metadata.json")
 		}
+		reserved := []string{"metadata.json"}
+		root, err := filepath.Abs(task.File)
+		if err != nil {
+			return err
+		}
+		relative, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		if relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+			reserved = append(reserved, filepath.ToSlash(relative))
+		}
+		if err := validateTilePathFileConflicts(task.tilePath, task.TileMap.Format, reserved...); err != nil {
+			return err
+		}
 	} else if task.outformat == "mbtiles" && strings.EqualFold(path, target.Path) {
 		return fmt.Errorf("failure manifest cannot replace the mbtiles database")
 	}
@@ -187,8 +218,42 @@ func (task *Task) setupFailureManifest() error {
 	if err := task.manifest.SetTarget(target); err != nil {
 		return err
 	}
+	if task.resume && !task.repairMode {
+		if _, err := os.Stat(path); err == nil {
+			previous, err := LoadFailureManifest(path)
+			if err != nil {
+				return fmt.Errorf("read existing failure manifest before continuing: %w", err)
+			}
+			data := previous.Snapshot()
+			if data.MapName != task.Name || data.Format != strings.ToLower(strings.TrimSpace(task.TileMap.Format)) {
+				return fmt.Errorf("existing failure manifest belongs to a different map or format; choose a separate output.failure_file")
+			}
+			oldTarget, oldOK := previous.Target()
+			currentTarget, _ := task.manifest.Target()
+			if !oldOK || !sameFailureTarget(oldTarget, currentTarget) {
+				return fmt.Errorf("existing failure manifest belongs to a different output target; keep the original destination or choose a separate output.failure_file")
+			}
+			// Retain failures from previous regions, even when the current job
+			// visits only a newly appended region. Successful saves resolve them.
+			task.manifest = previous
+		} else if !os.IsNotExist(err) {
+			return err
+		}
+	}
 	task.failurePath = path
 	return nil
+}
+
+func sameFailureTarget(a, b FailureTarget) bool {
+	if a.Kind != b.Kind || a.Path != b.Path || a.Bucket != b.Bucket || a.Prefix != b.Prefix || a.EndpointFingerprint != b.EndpointFingerprint {
+		return false
+	}
+	if a.Kind == "file" || a.Kind == "s3" {
+		ap, aerr := normalizeTilePath(a.TilePath)
+		bp, berr := normalizeTilePath(b.TilePath)
+		return aerr == nil && berr == nil && ap == bp
+	}
+	return true
 }
 
 func (task *Task) persistFailureManifest() error {

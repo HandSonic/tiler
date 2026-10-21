@@ -8,8 +8,14 @@
 	directory ="output"
 	#skip existing nonempty tiles; keep the same source and output settings
 	resume = false
+	#append another region to the same dataset; implies resume
+	#file/mbtiles append requires a fixed nonempty name below
+	append = false
 	#optional fixed file/mbtiles basename; resume defaults to Name-zmin-max
 	name = ""
+	#relative tile layout for file/S3 outputs; keep unchanged when resuming
+	#also supports {z}/{y}/{x}.{format}, {-y}, fixed subdirs, or no extension
+	tile_path = "{z}/{x}/{y}.{format}"
 	#optional PBF gzip override: file defaults false; mbtiles/s3 default true
 	#gzip_pbf = true
 	#optional JSON failure manifest path; repair reuses the original output target
@@ -17,7 +23,7 @@
 [output.s3]
 	#used for direct S3 output and the upload command; bucket must already exist
 	bucket = ""
-	#object key: prefix/z/x/y.ext; empty prefix gives z/x/y.ext
+	#direct tile key: prefix + output.tile_path; convert URIs specify their own path
 	prefix = "tiles"
 	#leave empty to use AWS_REGION, AWS_DEFAULT_REGION, or the AWS profile
 	region = ""
@@ -55,13 +61,13 @@
 	schema = "xyz"
 	#vector TileJSON metadata; PMTiles PBF conversion requires valid vector_layers
 	# json = ""
-	#url is the schema url of tiles
-	# url = "https://api.mapbox.com/v4/mapbox.mapbox-streets-v8/{z}/{x}/{y}.vector.pbf?sku=1016gFniej06a&access_token=pk.eyJ1IjoibWFwYm94IiwiYSI6ImNpejY4M29iazA2Z2gycXA4N2pmbDZmangifQ.-g_vE53SD2WrJ6tFX7QHmA"
-	# url = "https://api.mapbox.com/v4/mapbox.mapbox-terrain-v2/{z}/{x}/{y}.vector.pbf?sku=1016gFniej06a&access_token=pk.eyJ1IjoibWFwYm94IiwiYSI6ImNpejY4M29iazA2Z2gycXA4N2pmbDZmangifQ.-g_vE53SD2WrJ6tFX7QHmA"
-	# url = "https://api.maptiler.com/tiles/v3/{z}/{x}/{y}.pbf?key=KDhMfHvorAFkFe64wlZb"
+	#url is the schema url of tiles; replace YOUR_API_TOKEN with your own provider token
+	# url = "https://api.mapbox.com/v4/mapbox.mapbox-streets-v8/{z}/{x}/{y}.vector.pbf?sku=1016gFniej06a&access_token=YOUR_API_TOKEN"
+	# url = "https://api.mapbox.com/v4/mapbox.mapbox-terrain-v2/{z}/{x}/{y}.vector.pbf?sku=1016gFniej06a&access_token=YOUR_API_TOKEN"
+	# url = "https://api.maptiler.com/tiles/v3/{z}/{x}/{y}.pbf?key=YOUR_API_TOKEN"
 	# url = "http://mt0.google.com/vt/lyrs=s&x={x}&y={y}&z={z}"
-	# url = "https://t0.tianditu.gov.cn/DataServer?T=vec_w&x={x}&y={y}&l={z}&tk=75f0434f240669f4a2df6359275146d2"
-	url = "https://t0.tianditu.gov.cn/DataServer?T=img_w&x={x}&y={y}&l={z}&tk=75f0434f240669f4a2df6359275146d2"
+	# url = "https://t0.tianditu.gov.cn/DataServer?T=vec_w&x={x}&y={y}&l={z}&tk=YOUR_API_TOKEN"
+	url = "https://t0.tianditu.gov.cn/DataServer?T=img_w&x={x}&y={y}&l={z}&tk=YOUR_API_TOKEN"
 #lrs can set diff boundaries for diff levels
   [[lrs]]
   	min = 0

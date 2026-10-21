@@ -49,6 +49,7 @@ type Task struct {
 	savingpipe   chan Tile
 	tileSet      Set
 	outformat    string
+	tilePath     string
 	s3           *s3Output
 	errMu        sync.Mutex
 	firstErr     error
@@ -171,7 +172,19 @@ func newDownloadTask(layers []Layer, m TileMap, manifest *FailureManifest) *Task
 	task.tileSet = Set{M: make(maptile.Set)}
 
 	task.outformat = strings.ToLower(viper.GetString("output.format"))
-	task.resume = viper.GetBool("output.resume")
+	if task.outformat == "file" || task.outformat == "s3" {
+		var err error
+		task.tilePath, err = normalizeTilePath(viper.GetString("output.tile_path"))
+		if err != nil {
+			task.initErr = fmt.Errorf("output.tile_path: %w", err)
+			return &task
+		}
+	}
+	task.resume = viper.GetBool("output.resume") || viper.GetBool("output.append")
+	if viper.GetBool("output.append") && !task.repairMode && (task.outformat == "file" || task.outformat == "mbtiles") && strings.TrimSpace(viper.GetString("output.name")) == "" {
+		task.initErr = fmt.Errorf("output.append requires a fixed output.name for file or mbtiles output")
+		return &task
+	}
 	task.gzipPBF = task.outformat != "file"
 	if viper.IsSet("output.gzip_pbf") {
 		task.gzipPBF = viper.GetBool("output.gzip_pbf")
@@ -234,6 +247,26 @@ func (task *Task) SetupMBTileTables() error {
 		}
 		task.File = file
 	}
+	metadata := task.MetaItems()
+	if !task.repairMode {
+		var err error
+		metadata, err = mergeDownloadMetadata(nil, metadata, false)
+		if err != nil {
+			return err
+		}
+	}
+	var existing bool
+	if task.resume {
+		info, err := os.Stat(task.File)
+		if err == nil {
+			if !info.Mode().IsRegular() {
+				return fmt.Errorf("existing MBTiles output must be a regular database file")
+			}
+			existing = info.Size() > 0
+		} else if !os.IsNotExist(err) {
+			return err
+		}
+	}
 	if err := os.MkdirAll(filepath.Dir(task.File), os.ModePerm); err != nil {
 		return err
 	}
@@ -254,25 +287,43 @@ func (task *Task) SetupMBTileTables() error {
 	}()
 	// Serializing reads and writes also prevents SQLite locking races in resume mode.
 	db.SetMaxOpenConns(1)
+	if existing && !task.repairMode {
+		previous, err := readDownloadMBMetadata(db)
+		if err != nil {
+			return err
+		}
+		metadata, err = mergeDownloadMetadata(previous, metadata, false)
+		if err != nil {
+			return err
+		}
+	}
 	if err := optimizeConnection(db); err != nil {
 		return err
 	}
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
 	for _, query := range []string{
 		"create table if not exists tiles (zoom_level integer, tile_column integer, tile_row integer, tile_data blob);",
 		"create table if not exists metadata (name text, value text);",
 		"create unique index if not exists name on metadata (name);",
 		"create unique index if not exists tile_index on tiles(zoom_level, tile_column, tile_row);",
 	} {
-		if _, err := db.Exec(query); err != nil {
+		if _, err := tx.Exec(query); err != nil {
 			return err
 		}
 	}
 	if !task.repairMode {
-		for name, value := range task.MetaItems() {
-			if _, err := db.Exec("insert or replace into metadata (name, value) values (?, ?)", name, value); err != nil {
+		for name, value := range metadata {
+			if _, err := tx.Exec("insert or replace into metadata (name, value) values (?, ?)", name, value); err != nil {
 				return err
 			}
 		}
+	}
+	if err := tx.Commit(); err != nil {
+		return err
 	}
 	task.db = db
 	ready = true
@@ -458,6 +509,7 @@ func (task *Task) Download() error {
 			}
 			task.s3 = out
 		}
+		task.s3.tilePath = task.tilePath
 	case "file", "mbtiles":
 		if task.File == "" {
 			file, err := task.outputPath()
@@ -495,6 +547,9 @@ func (task *Task) Download() error {
 			}
 		}()
 	case "file":
+		if err := task.validateFileResumeMetadata(); err != nil {
+			return err
+		}
 		if err := os.MkdirAll(task.File, os.ModePerm); err != nil {
 			return fmt.Errorf("create output directory: %w", err)
 		}

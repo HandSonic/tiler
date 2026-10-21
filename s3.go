@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"net/http"
@@ -25,12 +26,18 @@ type s3Output struct {
 	client              *s3.Client
 	bucket              string
 	prefix              string
+	tilePath            string
+	allowUnmarkedTiles  bool
 	endpointFingerprint string
 	timeout             time.Duration
 }
 
 func newS3Output(ctx context.Context) (*s3Output, error) {
-	bucket := strings.TrimSpace(viper.GetString("output.s3.bucket"))
+	return newS3OutputForBucket(ctx, viper.GetString("output.s3.bucket"))
+}
+
+func newS3OutputForBucket(ctx context.Context, bucket string) (*s3Output, error) {
+	bucket = strings.TrimSpace(bucket)
 	if bucket == "" {
 		return nil, fmt.Errorf("output.s3.bucket is required")
 	}
@@ -75,6 +82,7 @@ func newS3Output(ctx context.Context) (*s3Output, error) {
 		client:              client,
 		bucket:              bucket,
 		prefix:              strings.Trim(viper.GetString("output.s3.prefix"), "/"),
+		tilePath:            viper.GetString("output.tile_path"),
 		endpointFingerprint: endpointFingerprint,
 		timeout:             time.Duration(timeoutSeconds) * time.Second,
 	}, nil
@@ -85,7 +93,14 @@ func (out *s3Output) save(tile Tile, format string) error {
 }
 
 func (out *s3Output) saveContext(parent context.Context, tile Tile, format string) error {
-	key := path.Join(out.prefix, fmt.Sprintf("%d/%d/%d.%s", tile.T.Z, tile.T.X, tile.T.Y, format))
+	key, err := out.tileKey(tile.T, format)
+	if err != nil {
+		return err
+	}
+	pattern, err := normalizeTilePath(out.tilePath)
+	if err != nil {
+		return err
+	}
 	contentType := http.DetectContentType(tile.C)
 	switch strings.ToLower(format) {
 	case "png":
@@ -102,6 +117,11 @@ func (out *s3Output) saveContext(parent context.Context, tile Tile, format strin
 		Key:         aws.String(key),
 		Body:        bytes.NewReader(tile.C),
 		ContentType: aws.String(contentType),
+		Metadata: map[string]string{
+			"tiler-path":   fmt.Sprintf("%x", sha256.Sum256([]byte(pattern))),
+			"tiler-xyz":    fmt.Sprintf("%d/%d/%d", tile.T.Z, tile.T.X, tile.T.Y),
+			"tiler-format": strings.ToLower(format),
+		},
 	}
 	if strings.EqualFold(format, PBF) && len(tile.C) >= 2 && tile.C[0] == 0x1f && tile.C[1] == 0x8b {
 		input.ContentEncoding = aws.String("gzip")
@@ -115,7 +135,10 @@ func (out *s3Output) saveContext(parent context.Context, tile Tile, format strin
 }
 
 func (out *s3Output) exists(parent context.Context, tile maptile.Tile, format string) (bool, error) {
-	key := path.Join(out.prefix, fmt.Sprintf("%d/%d/%d.%s", tile.Z, tile.X, tile.Y, format))
+	key, err := out.tileKey(tile, format)
+	if err != nil {
+		return false, err
+	}
 	ctx, cancel := context.WithTimeout(parent, out.timeout)
 	defer cancel()
 	result, err := out.client.HeadObject(ctx, &s3.HeadObjectInput{Bucket: aws.String(out.bucket), Key: aws.String(key)})
@@ -130,5 +153,33 @@ func (out *s3Output) exists(parent context.Context, tile maptile.Tile, format st
 		}
 		return false, fmt.Errorf("check s3://%s/%s: %w", out.bucket, key, err)
 	}
-	return aws.ToInt64(result.ContentLength) > 0, nil
+	if aws.ToInt64(result.ContentLength) <= 0 {
+		return false, nil
+	}
+	pattern, err := normalizeTilePath(out.tilePath)
+	if err != nil {
+		return false, err
+	}
+	pathHash := result.Metadata["tiler-path"]
+	if pathHash != "" && pathHash != fmt.Sprintf("%x", sha256.Sum256([]byte(pattern))) {
+		return false, fmt.Errorf("existing S3 tile uses a different tile_path; keep the original template or choose a new prefix")
+	}
+	if pathHash == "" && pattern != defaultTilePath && !out.allowUnmarkedTiles {
+		return false, fmt.Errorf("cannot confirm tile_path of an unmarked S3 tile; use the original template or a new prefix")
+	}
+	if xyz := result.Metadata["tiler-xyz"]; xyz != "" && xyz != fmt.Sprintf("%d/%d/%d", tile.Z, tile.X, tile.Y) {
+		return false, fmt.Errorf("existing S3 tile coordinates do not match the requested tile")
+	}
+	if storedFormat := result.Metadata["tiler-format"]; storedFormat != "" && !strings.EqualFold(storedFormat, format) {
+		return false, fmt.Errorf("existing S3 tile format does not match the requested format")
+	}
+	return true, nil
+}
+
+func (out *s3Output) tileKey(tile maptile.Tile, format string) (string, error) {
+	relative, err := renderTilePath(out.tilePath, tile, format)
+	if err != nil {
+		return "", err
+	}
+	return path.Join(out.prefix, relative), nil
 }

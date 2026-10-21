@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -43,7 +42,7 @@ func (task *Task) fetchTile(ctx context.Context, tileURL string) ([]byte, error)
 		retry := err != nil
 		if resp != nil {
 			if resp.StatusCode == http.StatusOK {
-				body, readErr := io.ReadAll(resp.Body)
+				body, readErr := readTileData(resp.Body)
 				resp.Body.Close()
 				if readErr == nil && len(body) > 0 {
 					return body, nil

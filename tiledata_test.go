@@ -4,13 +4,65 @@ import (
 	"bytes"
 	"compress/gzip"
 	"encoding/binary"
+	"hash/crc32"
 	"image"
 	"image/color"
 	"image/jpeg"
 	"image/png"
 	"io"
+	"strings"
 	"testing"
 )
+
+type tileZeroReader struct{}
+
+func (tileZeroReader) Read(p []byte) (int, error) {
+	for i := range p {
+		p[i] = 0
+	}
+	return len(p), nil
+}
+
+func TestPrepareTileDataBoundsDecompressionAndImageAllocation(t *testing.T) {
+	var compressed bytes.Buffer
+	writer := gzip.NewWriter(&compressed)
+	if _, err := io.CopyN(writer, tileZeroReader{}, maxTileDataBytes+1); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := prepareTileData(compressed.Bytes(), PBF, true); err == nil || !strings.Contains(err.Error(), "64 MiB") {
+		t.Fatalf("oversized decompressed PBF accepted: %v", err)
+	}
+	body := tileDataPNG(t)
+	binary.BigEndian.PutUint32(body[16:20], 8192)
+	binary.BigEndian.PutUint32(body[20:24], 8192)
+	binary.BigEndian.PutUint32(body[29:33], crc32.ChecksumIEEE(body[12:29]))
+	if _, err := prepareTileData(body, PNG, false); err == nil || !strings.Contains(err.Error(), "16 megapixel") {
+		t.Fatalf("oversized image was not rejected from its header: %v", err)
+	}
+}
+
+func TestPrepareTileDataNestedPBFAndDisguisedRaster(t *testing.T) {
+	raw := []byte("vector tile")
+	nested := tileDataGzip(t, tileDataGzip(t, raw))
+	got, err := prepareTileData(nested, PBF, false)
+	if err != nil || !bytes.Equal(got, raw) {
+		t.Fatalf("nested gzip was not normalized: %v", err)
+	}
+	for _, body := range [][]byte{tileDataPNG(t), tileDataGzip(t, tileDataGzip(t, tileDataPNG(t)))} {
+		if _, err := prepareTileData(body, PBF, true); err == nil {
+			t.Fatal("accepted a raster image disguised as PBF")
+		}
+	}
+	for i := 0; i < 5; i++ {
+		raw = tileDataGzip(t, raw)
+	}
+	if _, err := prepareTileData(raw, PBF, true); err == nil || !strings.Contains(err.Error(), "nesting") {
+		t.Fatalf("unbounded gzip nesting accepted: %v", err)
+	}
+}
 
 func tileDataPNG(t *testing.T) []byte {
 	t.Helper()
