@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"unicode/utf16"
@@ -106,13 +107,17 @@ func archiveTestReadPM(t *testing.T, path string) (pm.HeaderV3, map[uint64][]byt
 }
 
 func TestArchiveXYZToMBTilesAndPMTiles(t *testing.T) {
-	input := filepath.Join(t.TempDir(), "tiles ?# map")
+	special := " #%"
+	if runtime.GOOS != "windows" {
+		special += "?" // Question marks are not valid Windows filename characters.
+	}
+	input := filepath.Join(t.TempDir(), "tiles"+special+" map")
 	red, blue := archiveTestPNG(t, color.RGBA{R: 255, A: 255}), archiveTestPNG(t, color.RGBA{B: 255, A: 255})
 	archiveTestWrite(t, filepath.Join(input, "1", "0", "0.png"), red)
 	archiveTestWrite(t, filepath.Join(input, "1", "1", "1.png"), blue)
 	archiveTestWrite(t, filepath.Join(input, "metadata.json"), []byte(`{"name":"test map","format":"png","json":{"name":"nested map","description":"nested description"},"bounds":"-180,-85.0511288,180,85.0511288"}`))
 	archiveTestWrite(t, filepath.Join(input, "failures.json"), []byte(`[{"z":1,"x":0,"y":1}]`))
-	output := filepath.Join(t.TempDir(), "map ?#.mbtiles")
+	output := filepath.Join(t.TempDir(), "map"+special+".mbtiles")
 	result, err := ConvertArchive(context.Background(), input, output, ArchiveConvertOptions{})
 	if err != nil {
 		t.Fatal(err)

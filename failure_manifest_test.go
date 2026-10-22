@@ -68,6 +68,9 @@ func TestFailureManifestRejectsOversizedFiles(t *testing.T) {
 }
 
 func TestFailureManifestRejectsFIFOWithoutBlocking(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX named pipe reproduction")
+	}
 	command, err := exec.LookPath("mkfifo")
 	if err != nil {
 		t.Skip("mkfifo unavailable")
