@@ -159,21 +159,35 @@ func TestPrepareTileDataJPEGUsesWhiteBackground(t *testing.T) {
 
 func TestPrepareTileDataPBFCompression(t *testing.T) {
 	raw := []byte{0x1a, 0x05, 0x0a, 0x03, 'm', 'a', 'p'}
+	var compressed bytes.Buffer
+	writer := gzip.NewWriter(&compressed)
+	writer.Name = "upstream.pbf"
+	if _, err := writer.Write(raw); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
 	tests := []struct {
-		name string
-		body []byte
-		gzip bool
+		name     string
+		body     []byte
+		gzip     bool
+		preserve bool
 	}{
-		{"raw to raw", raw, false},
-		{"raw to gzip", raw, true},
-		{"gzip to raw", tileDataGzip(t, raw), false},
-		{"gzip stays single layer", tileDataGzip(t, raw), true},
+		{"raw to raw", raw, false, false},
+		{"raw to gzip", raw, true, false},
+		{"gzip to raw", compressed.Bytes(), false, false},
+		{"gzip stays single layer", compressed.Bytes(), true, true},
+		{"nested gzip becomes single layer", tileDataGzip(t, compressed.Bytes()), true, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got, err := prepareTileData(tt.body, "pbf", tt.gzip)
 			if err != nil {
 				t.Fatal(err)
+			}
+			if tt.preserve && !bytes.Equal(got, tt.body) {
+				t.Fatal("already-gzipped tile was recompressed")
 			}
 			if tt.gzip {
 				zr, err := gzip.NewReader(bytes.NewReader(got))
@@ -190,6 +204,12 @@ func TestPrepareTileDataPBFCompression(t *testing.T) {
 				t.Errorf("saved PBF = %v; want original protobuf %v", got, raw)
 			}
 		})
+	}
+	corrupt := append([]byte(nil), compressed.Bytes()...)
+	// The eight-byte gzip trailer contains CRC32 followed by the original size.
+	corrupt[len(corrupt)-8] ^= 0xff
+	if _, err := prepareTileData(corrupt, PBF, true); err == nil {
+		t.Fatal("accepted an already-gzipped tile with a corrupt checksum")
 	}
 }
 

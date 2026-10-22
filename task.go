@@ -459,14 +459,24 @@ func (task *Task) SetupMBTileTables() error {
 // SavePipe 保存瓦片管道
 func (task *Task) savePipe() {
 	for tile := range task.savingpipe {
-		err := saveToMBTile(tile, task.db)
-		if err != nil {
-			task.recordTileFailure(tile.T, tile.Source, fmt.Errorf("save %v tile to mbtiles: %w", tile.T, err))
-		} else {
-			task.saved.Add(1)
-			task.resolveTileFailure(tile.T, tile.Source)
+		// Combine only tiles already waiting in the configured queue. Never
+		// wait for another tile while a transaction owns the sole DB connection:
+		// resume checks may need it before another download can be scheduled.
+		batch := make([]Tile, len(task.savingpipe)+1)
+		batch[0] = tile
+		for i := 1; i < len(batch); i++ {
+			batch[i] = <-task.savingpipe
 		}
-		task.saveWG.Done()
+		err := saveToMBTiles(batch, task.db)
+		for _, tile := range batch {
+			if err != nil {
+				task.recordTileFailure(tile.T, tile.Source, fmt.Errorf("save %v tile to mbtiles: %w", tile.T, err))
+			} else {
+				task.saved.Add(1)
+				task.resolveTileFailure(tile.T, tile.Source)
+			}
+			task.saveWG.Done()
+		}
 	}
 }
 
@@ -676,6 +686,7 @@ func (task *Task) Download() error {
 	if err := task.setupHTTP(); err != nil {
 		return err
 	}
+	defer task.httpClient.CloseIdleConnections()
 	var saveDone chan struct{}
 	switch task.outformat {
 	case "s3":

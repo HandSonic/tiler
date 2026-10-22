@@ -129,6 +129,10 @@ See [conversion, upload, and repair details](docs/archive-and-repair.md) for opt
 - Run `./tiler -i -c conf.toml` for controls: enter `p`, `r`, or `q`, then Enter, to pause, resume, or cancel. Pausing stops new scheduling while in-flight requests finish. Ctrl+C cancels while preserving saved tiles; restart with resume enabled.
 - End-of-task logs report concurrency-safe `saved`, `skipped`, and `failed` counts for successful writes, verified existing nonempty tiles, and tile errors. File resume skips do not wait for `task.timedelay`.
 
+Throughput depends on the provider, network, encoding and disk. `task.workers` controls concurrency, and the HTTP idle connection pool scales with it. `task.timedelay` controls request start spacing: the example's `50` milliseconds allows at most about 20 starts per second. Where the provider permits, use `0` and increase concurrency gradually; reduce concurrency or restore spacing on 429/503 responses.
+
+`task.savepipe` is the MBTiles queue capacity, not a writer count. The writer commits already queued tiles together; with an empty queue it writes one tile immediately, without waiting to fill a batch. Only committed tiles count as `saved`; a failed batch rolls back and its tiles enter the failure manifest. A larger queue can improve batching on a slow disk but uses more memory. Rectangular GeoJSON regions, including the example world extent, use direct counting and streaming enumeration. Single-layer gzip PBF bytes are reused after full decompression and validation. These optimizations preserve tile validation and configured request pacing.
+
 ## FAQ and scope
 
 | Question | Answer |

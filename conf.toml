@@ -42,9 +42,9 @@
 [task]
 	#number of fetchers
 	workers = 3
-	#number of savers
+	#MBTiles queue capacity (one writer); already queued tiles share a transaction
 	savepipe = 1
-	#min request interval, a speed limit, unit millisecond
+	#min request interval in milliseconds; 50 allows at most about 20 starts/sec
 	timedelay = 50
 	#download request timeout in seconds; must be positive
 	timeout_seconds = 30

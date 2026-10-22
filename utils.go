@@ -14,12 +14,24 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-func saveToMBTile(tile Tile, db *sql.DB) error {
-	_, err := db.Exec("insert or replace into tiles (zoom_level, tile_column, tile_row, tile_data) values (?, ?, ?, ?);", tile.T.Z, tile.T.X, tile.flipY(), tile.C)
+func saveToMBTiles(tiles []Tile, db *sql.DB) error {
+	const insert = "insert or replace into tiles (zoom_level, tile_column, tile_row, tile_data) values (?, ?, ?, ?);"
+	if len(tiles) == 1 {
+		tile := tiles[0]
+		_, err := db.Exec(insert, tile.T.Z, tile.T.X, tile.flipY(), tile.C)
+		return err
+	}
+	tx, err := db.Begin()
 	if err != nil {
 		return err
 	}
-	return nil
+	defer tx.Rollback()
+	for _, tile := range tiles {
+		if _, err := tx.Exec(insert, tile.T.Z, tile.T.X, tile.flipY(), tile.C); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func saveToFiles(tile Tile, task *Task) error {

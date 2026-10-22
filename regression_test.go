@@ -120,6 +120,65 @@ func TestFetchTileRetriesTransientHTTPStatuses(t *testing.T) {
 	}
 }
 
+func TestFetchTileReusesConnectionsAcrossWorkerWaves(t *testing.T) {
+	configureRegressionOutput(t)
+	const workers = 4
+	viper.Set("task.workers", workers)
+	entered := make(chan struct{}, workers)
+	gates := []chan struct{}{make(chan struct{}), make(chan struct{})}
+	var connections int32
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		wave := 0
+		if r.URL.Path == "/second" {
+			wave = 1
+		}
+		entered <- struct{}{}
+		select {
+		case <-gates[wave]:
+			io.WriteString(w, "tile bytes")
+		case <-r.Context().Done():
+		}
+	}))
+	server.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		if state == http.StateNew {
+			atomic.AddInt32(&connections, 1)
+		}
+	}
+	server.Start()
+	defer server.Close()
+	task := newRegressionTask(t, server.URL)
+	defer task.Cancel()
+	if err := task.setupHTTP(); err != nil {
+		t.Fatal(err)
+	}
+	defer task.httpClient.CloseIdleConnections()
+	for wave, path := range []string{"/first", "/second"} {
+		results := make(chan error, workers)
+		for i := 0; i < workers; i++ {
+			go func() {
+				_, err := task.fetchTile(task.ctx, server.URL+path)
+				results <- err
+			}()
+		}
+		for i := 0; i < workers; i++ {
+			select {
+			case <-entered:
+			case err := <-results:
+				t.Fatalf("worker returned before the wave was released: %v", err)
+			}
+		}
+		close(gates[wave])
+		for i := 0; i < workers; i++ {
+			if err := <-results; err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if got := atomic.LoadInt32(&connections); got != workers {
+		t.Fatalf("two worker waves opened %d connections; want %d reused connections", got, workers)
+	}
+}
+
 func TestFetchTileHonorsHTTPTimeout(t *testing.T) {
 	configureRegressionOutput(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -150,7 +150,9 @@ func (task *Task) recordTileFailure(tile maptile.Tile, source string, err error)
 }
 
 func (task *Task) resolveTileFailure(tile maptile.Tile, source string) {
-	if task.manifest != nil {
+	// Sources were validated during task initialization. Successful downloads
+	// need no source fingerprint work when there are no failures to resolve.
+	if task.manifest != nil && task.manifest.Len() != 0 {
 		if err := task.manifest.Resolve(tile, source); err != nil {
 			task.recordError(fmt.Errorf("resolve failed tile: %w", err))
 		}

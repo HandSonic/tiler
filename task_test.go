@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/paulmach/orb"
+	"github.com/paulmach/orb/maptile"
 	"github.com/spf13/viper"
 )
 
@@ -229,5 +230,56 @@ func TestTaskDownloadLocalOutputs(t *testing.T) {
 				t.Errorf("Download returned before all MBTiles rows were saved: missing %v", want)
 			}
 		})
+	}
+}
+
+func TestTaskMBTilesBatchCommitFailureAndRetry(t *testing.T) {
+	db, err := archiveOpenSQLite(filepath.Join(t.TempDir(), "tiles.mbtiles"), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	// Both inserts succeed; the missing parent makes COMMIT fail. This checks
+	// that queued tiles are acknowledged only after the whole batch commits.
+	_, err = db.Exec(`PRAGMA foreign_keys=ON;
+		CREATE TABLE allowed (x INTEGER PRIMARY KEY);
+		INSERT INTO allowed VALUES (0);
+		CREATE TABLE tiles (zoom_level INTEGER, tile_column INTEGER, tile_row INTEGER, tile_data BLOB,
+			FOREIGN KEY(tile_column) REFERENCES allowed(x) DEFERRABLE INITIALLY DEFERRED);`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	task := &Task{db: db, manifest: newFailureManifest("batch", PNG)}
+	tiles := []Tile{
+		{T: maptile.Tile{Z: 1}, C: []byte("first"), Source: manifestTestURL},
+		{T: maptile.Tile{Z: 1, X: 1}, C: []byte("second"), Source: manifestTestURL},
+	}
+	writeQueued := func() {
+		task.savingpipe = make(chan Tile, len(tiles))
+		for _, tile := range tiles {
+			task.saveWG.Add(1)
+			task.savingpipe <- tile
+		}
+		close(task.savingpipe)
+		task.savePipe()
+		task.saveWG.Wait()
+	}
+	writeQueued()
+	var count int
+	if err := db.QueryRow("SELECT count(*) FROM tiles").Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 || task.Stats() != (DownloadStats{Failed: 2}) || task.manifest.Len() != 2 {
+		t.Fatalf("failed commit was acknowledged: rows=%d stats=%+v failures=%d", count, task.Stats(), task.manifest.Len())
+	}
+	if _, err := db.Exec("INSERT INTO allowed VALUES (1)"); err != nil {
+		t.Fatal(err)
+	}
+	writeQueued()
+	if err := db.QueryRow("SELECT count(*) FROM tiles").Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 2 || task.Stats() != (DownloadStats{Saved: 2, Failed: 2}) || task.manifest.Len() != 0 {
+		t.Fatalf("retry did not commit and resolve failures: rows=%d stats=%+v failures=%d", count, task.Stats(), task.manifest.Len())
 	}
 }

@@ -43,8 +43,10 @@ func prepareTileData(body []byte, format string, gzipPBF bool) ([]byte, error) {
 	format = strings.ToLower(strings.TrimSpace(format))
 	switch format {
 	case "pbf":
-		for depth := 0; len(body) >= 2 && body[0] == 0x1f && body[1] == 0x8b; depth++ {
-			if depth >= 4 {
+		original := body
+		gzipLayers := 0
+		for ; len(body) >= 2 && body[0] == 0x1f && body[1] == 0x8b; gzipLayers++ {
+			if gzipLayers >= 4 {
 				return nil, fmt.Errorf("PBF gzip nesting exceeds four layers")
 			}
 			zr, err := gzip.NewReader(bytes.NewReader(body))
@@ -80,6 +82,11 @@ func prepareTileData(body []byte, format string, gzipPBF bool) ([]byte, error) {
 		}
 		if !gzipPBF {
 			return body, nil
+		}
+		// Preserve already-compressed tiles only after fully checking their
+		// decompressed contents and checksum. Nested gzip still becomes one layer.
+		if gzipLayers == 1 {
+			return original, nil
 		}
 		var buf bytes.Buffer
 		zw := gzip.NewWriter(&buf)

@@ -131,7 +131,7 @@ func (c *auditCancelContext) Err() error {
 }
 
 func TestAuditCoverageCountPreparationIsCancelable(t *testing.T) {
-	polygon := orb.Polygon{{{-179, -80}, {-179, 80}, {179, 80}, {179, -80}, {-179, -80}}}
+	polygon := orb.Polygon{{{-179, -80}, {-179, 80}, {178, 80}, {179, -80}, {-179, -80}}}
 	ctx := &auditCancelContext{Context: context.Background(), checks: 30}
 	if _, err := CountContext(ctx, orb.Collection{polygon}, 20); !errors.Is(err, context.Canceled) {
 		t.Fatalf("count boundary did not cancel: %v", err)
@@ -145,9 +145,18 @@ func TestAuditCoverageCountPreparationIsCancelable(t *testing.T) {
 }
 
 func TestAuditCoverageCountLargeBoundWithoutEnumeration(t *testing.T) {
-	count, err := CountContext(context.Background(), orb.Collection{orb.Bound{Min: orb.Point{-180, -90}, Max: orb.Point{180, 90}}}, 30)
-	if err != nil || count != int64(1)<<60 {
-		t.Fatalf("world count=%d error=%v", count, err)
+	for _, geometry := range []orb.Geometry{
+		orb.Bound{Min: orb.Point{-180, -90}, Max: orb.Point{180, 90}},
+		orb.Polygon{{{-180, -90}, {-180, 90}, {180, 90}, {180, -90}, {-180, -90}}},
+	} {
+		count, err := CountContext(context.Background(), orb.Collection{geometry}, 30)
+		if err != nil || count != int64(1)<<60 {
+			t.Fatalf("%T world count=%d error=%v", geometry, count, err)
+		}
+		stop := errors.New("first tile")
+		if err := Walk(context.Background(), orb.Collection{geometry}, 30, func(maptile.Tile) error { return stop }); !errors.Is(err, stop) {
+			t.Fatalf("%T world walk: %v", geometry, err)
+		}
 	}
 }
 

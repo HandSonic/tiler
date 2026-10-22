@@ -249,6 +249,9 @@ func polygonBoundary(ctx context.Context, p orb.Polygon, zoom maptile.Zoom) (map
 }
 
 func countPolygon(ctx context.Context, p orb.Polygon, zoom maptile.Zoom) (int64, error) {
+	if bound, ok := rectangularPolygonBound(p); ok {
+		return countGeometry(ctx, bound, zoom)
+	}
 	set, intersections, err := polygonBoundary(ctx, p, zoom)
 	if err != nil {
 		return 0, err
@@ -267,6 +270,9 @@ func countPolygon(ctx context.Context, p orb.Polygon, zoom maptile.Zoom) (int64,
 }
 
 func polygonWalkContext(ctx context.Context, p orb.Polygon, zoom maptile.Zoom, emit func(maptile.Tile) error) error {
+	if bound, ok := rectangularPolygonBound(p); ok {
+		return walkGeometry(ctx, bound, zoom, emit)
+	}
 	set, intersections, err := polygonBoundary(ctx, p, zoom)
 	if err != nil {
 		return err
@@ -290,4 +296,22 @@ func polygonWalkContext(ctx context.Context, p orb.Polygon, zoom maptile.Zoom, e
 		}
 	}
 	return ctx.Err()
+}
+
+// Rectangular GeoJSON regions have the same coverage as Bound. Avoid building
+// their perimeter tile map, which grows with zoom even before the first visit.
+func rectangularPolygonBound(p orb.Polygon) (orb.Bound, bool) {
+	if len(p) != 1 || len(p[0]) != 5 {
+		return orb.Bound{}, false
+	}
+	r := p[0]
+	if r[0] != r[4] || r[0][0] == r[2][0] || r[0][1] == r[2][1] {
+		return orb.Bound{}, false
+	}
+	verticalFirst := r[0][0] == r[1][0] && r[1][1] == r[2][1] && r[2][0] == r[3][0] && r[3][1] == r[0][1]
+	horizontalFirst := r[0][1] == r[1][1] && r[1][0] == r[2][0] && r[2][1] == r[3][1] && r[3][0] == r[0][0]
+	if !verticalFirst && !horizontalFirst {
+		return orb.Bound{}, false
+	}
+	return p.Bound(), true
 }

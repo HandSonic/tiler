@@ -23,6 +23,7 @@ func TestWalkMatchesUpstreamCoverage(t *testing.T) {
 		{"multiline", orb.MultiLineString{{{70, 10}, {100, 40}}, {{100, 40}, {135, 20}}}},
 		{"ring", outer},
 		{"polygon with hole", orb.Polygon{outer, hole}},
+		{"nearly rectangular polygon", orb.Polygon{{{70, 0}, {70, 55}, {135, 55}, {140, 0}, {70, 0}}}},
 		{"multipolygon", orb.MultiPolygon{{outer}, {{{145, 10}, {145, 20}, {160, 20}, {160, 10}, {145, 10}}}}},
 		{"nested collection", orb.Collection{orb.Point{10, 20}, orb.Collection{orb.Polygon{outer}, orb.Point{118, 32}}}},
 		{"bound", orb.Bound{Min: orb.Point{70, 0}, Max: orb.Point{140, 55}}},
@@ -61,26 +62,30 @@ func TestIssue13WebMercatorRectangle(t *testing.T) {
 	// The rectangle supplied in issue #13 covers these Web Mercator tiles.
 	// Its provider's vec_c URL uses a different matrix; polygon and multipolygon
 	// parsing themselves must produce the same coverage for vec_w.
-	polygon := orb.Polygon{{
-		{71.815883, 0.000001}, {71.815883, 53.759980},
-		{135.668005, 53.759980}, {135.668005, 0.000001}, {71.815883, 0.000001},
-	}}
-	for _, zoom := range []maptile.Zoom{0, 3, 6, 9} {
-		want := upstream.Bound(polygon.Bound(), zoom)
-		for _, geometry := range []orb.Geometry{polygon, orb.MultiPolygon{polygon}} {
-			got := make(maptile.Set)
-			if err := Walk(context.Background(), orb.Collection{geometry}, zoom, func(tile maptile.Tile) error {
-				got[tile] = true
-				return nil
-			}); err != nil {
-				t.Fatal(err)
-			}
-			if len(got) != len(want) {
-				t.Fatalf("zoom %d: %T tiles = %d; rectangle = %d", zoom, geometry, len(got), len(want))
-			}
-			for tile := range want {
-				if !got[tile] {
-					t.Errorf("zoom %d: missing tile %v", zoom, tile)
+	for _, polygon := range []orb.Polygon{
+		{{{71.815883, 0.000001}, {71.815883, 53.759980}, {135.668005, 53.759980}, {135.668005, 0.000001}, {71.815883, 0.000001}}},
+		// Grid-aligned corners, opposite winding and a different start corner.
+		{{{90, 66.51326044311186}, {0, 66.51326044311186}, {0, 0}, {90, 0}, {90, 66.51326044311186}}},
+		// A rectangle smaller than a tile still includes its tile once.
+		{{{1, 1}, {1.001, 1}, {1.001, 1.001}, {1, 1.001}, {1, 1}}},
+	} {
+		for _, zoom := range []maptile.Zoom{0, 3, 6, 9} {
+			want := upstream.Bound(polygon.Bound(), zoom)
+			for _, geometry := range []orb.Geometry{polygon, orb.MultiPolygon{polygon}} {
+				got := make(maptile.Set)
+				if err := Walk(context.Background(), orb.Collection{geometry}, zoom, func(tile maptile.Tile) error {
+					got[tile] = true
+					return nil
+				}); err != nil {
+					t.Fatal(err)
+				}
+				if len(got) != len(want) {
+					t.Fatalf("zoom %d: %T tiles = %d; rectangle = %d", zoom, geometry, len(got), len(want))
+				}
+				for tile := range want {
+					if !got[tile] {
+						t.Errorf("zoom %d: missing tile %v", zoom, tile)
+					}
 				}
 			}
 		}

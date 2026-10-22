@@ -102,8 +102,14 @@ func (task *Task) setupHTTP() error {
 		task.userAgent = "Mozilla/5.0 (compatible; Tiler)"
 	}
 	task.referer = viper.GetString("task.referer")
-	// Use the standard redirect and proxy behavior for all tile providers.
-	task.httpClient = &http.Client{Timeout: time.Duration(timeout) * time.Second}
+	// Retain the standard proxy, TLS and HTTP/2 behavior, but keep enough
+	// idle connections for the next wave of workers on the same tile host.
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.MaxIdleConnsPerHost = task.workerCount
+	if transport.MaxIdleConns < task.workerCount {
+		transport.MaxIdleConns = task.workerCount
+	}
+	task.httpClient = &http.Client{Transport: transport, Timeout: time.Duration(timeout) * time.Second}
 	task.httpClient.CheckRedirect = func(req *http.Request, via []*http.Request) error {
 		if len(via) >= 10 {
 			return fmt.Errorf("stopped after 10 redirects")
