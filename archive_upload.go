@@ -30,9 +30,9 @@ type ArchiveUploadOptions struct {
 	Timeout     time.Duration
 	PartSize    int64
 	Concurrency int
-	// Converted Compact appends extend the existing grid before publishing
-	// bundles, so a partial upload never leaves tiles beyond the declared LODs.
-	compactAppend bool
+	// Converted Compact caches publish their grid before bundles, allowing
+	// both initial transfers and appends to be retried after a partial upload.
+	compactMetadataFirst bool
 }
 
 // ArchiveUploadObject describes an archive whose upload has completed.
@@ -55,10 +55,10 @@ type archiveUploadFile struct {
 
 // UploadArchives uploads explicit .mbtiles/.pmtiles files, Compact v2 cache
 // directories, or recursively finds archives below other input directories.
-// A Compact cache uploads its bundles before metadata. A directory contributes
-// its relative paths; an explicit file contributes its basename. All inputs and destination
-// key collisions are checked before any network request. Existing S3 keys are
-// replaced only when their complete upload succeeds.
+// By default a Compact cache uploads its bundles before metadata. A directory
+// contributes its relative paths; an explicit file contributes its basename.
+// All inputs and destination key collisions are checked before any network
+// request. Existing S3 keys are replaced only when their complete upload succeeds.
 //
 // Files are processed in input order and bundle/archive entries in lexical order.
 // On failure the result contains only the files already uploaded completely.
@@ -100,7 +100,7 @@ func UploadArchives(ctx context.Context, out *s3Output, inputs []string, opts Ar
 	if err != nil {
 		return result, err
 	}
-	if opts.compactAppend {
+	if opts.compactMetadataFirst {
 		sort.SliceStable(files, func(i, j int) bool {
 			left, _ := compactCacheFile(filepath.Base(files[i].Path))
 			right, _ := compactCacheFile(filepath.Base(files[j].Path))

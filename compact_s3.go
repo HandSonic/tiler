@@ -178,6 +178,6 @@ func archiveS3ConvertToCompact(ctx context.Context, out *s3Output, input, prefix
 	}
 	destination := *out
 	destination.prefix = strings.TrimRight(prefix, "/")
-	_, err = UploadArchives(ctx, &destination, []string{directory}, ArchiveUploadOptions{compactAppend: exists})
+	_, err = UploadArchives(ctx, &destination, []string{directory}, ArchiveUploadOptions{compactMetadataFirst: true})
 	return result, err
 }

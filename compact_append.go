@@ -63,9 +63,15 @@ func archivePrepareCompactAppend(ctx context.Context, input string, previous map
 	tileSize, _ := strconv.Atoi(incoming["pixel_scale"]) // Validated by compactReadMetadata.
 	cache := &compactCache{root: directory, format: format, tileSize: tileSize, resume: true}
 	extent := archiveExtent{}
-	var current string
+	var current, newBundle string
 	changed := false
 	finishBundle := func() error {
+		if newBundle != "" {
+			// The previous bundle's reader is closed before the next bundle
+			// starts (or the walk returns), including on Windows. Reuse this
+			// validated staging file instead of writing its tiles a second time.
+			return os.Rename(newBundle, current)
+		}
 		if current != "" && !changed {
 			// A bundle containing only overlaps does not need publication.
 			if err := os.Remove(current); err != nil && !os.IsNotExist(err) {
@@ -81,7 +87,7 @@ func archivePrepareCompactAppend(ctx context.Context, input string, previous map
 			if err := finishBundle(); err != nil {
 				return err
 			}
-			current, changed = path, false
+			current, newBundle, changed = path, "", false
 			if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 				return err
 			}
@@ -92,6 +98,15 @@ func archivePrepareCompactAppend(ctx context.Context, input string, previous map
 			if err := loadBundle(ctx, filepath.ToSlash(relative), path); err != nil {
 				return err
 			}
+			if _, err := os.Lstat(path); os.IsNotExist(err) {
+				newBundle = compactPath(incomingRoot, z, x, y)
+			} else if err != nil {
+				return err
+			}
+		}
+		if newBundle != "" {
+			result.Tiles++
+			return nil
 		}
 		present, err := cache.Exists(ctx, z, x, y)
 		if err != nil || present {

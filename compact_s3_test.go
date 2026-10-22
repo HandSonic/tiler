@@ -35,8 +35,30 @@ func TestCompactS3RoundTripAppendAndUpload(t *testing.T) {
 	store.put("source/tiles/8/128/130.png", blue)
 	store.put("source/tiles/7/64/65.png", blue) // Unrelated old bundle.
 	const destination = "s3://destination/cache/"
-	if result, err := ConvertArchive(ctx, "s3://source/tiles/", destination, ArchiveConvertOptions{S3: out, OutputKind: "compactv2"}); err != nil || result.Tiles != 3 {
-		t.Fatalf("S3 loose tiles to Compact: result=%+v err=%v", result, err)
+	// The first transfer must also be retryable after some bundles arrive.
+	// Fail the second bundle, leaving the completed L07 bundle in place.
+	firstFailure := "PUT destination/cache/_alllayers/L08/R0080C0000.bundle"
+	store.fail(firstFailure, http.StatusForbidden)
+	if _, err := ConvertArchive(ctx, "s3://source/tiles/", destination, ArchiveConvertOptions{S3: out, OutputKind: "compactv2"}); err == nil {
+		t.Fatal("initial conversion ignored a failed bundle upload")
+	}
+	for _, name := range []string{"metadata.json", "conf.cdi", "conf.xml", "_alllayers/L07/R0000C0000.bundle"} {
+		if len(store.get("destination/cache/"+name)) == 0 {
+			t.Fatalf("initial transfer cannot be resumed: missing %s", name)
+		}
+	}
+	store.fail(firstFailure, 0)
+	beforeFirstRetry := store.totalRequests()
+	if result, err := ConvertArchive(ctx, "s3://source/tiles/", destination, ArchiveConvertOptions{S3: out, OutputKind: "compactv2", Append: true}); err != nil || !result.Incremental || result.Tiles != 2 {
+		t.Fatalf("resume first S3 Compact transfer: result=%+v err=%v", result, err)
+	}
+	store.mu.Lock()
+	firstRetryRequests := append([]string(nil), store.requests[beforeFirstRetry:]...)
+	store.mu.Unlock()
+	for _, request := range firstRetryRequests {
+		if request == "PUT destination/cache/_alllayers/L07/R0000C0000.bundle" {
+			t.Fatal("first transfer retry reuploaded a completed bundle")
+		}
 	}
 	if len(store.get("destination/cache/conf.xml")) == 0 || len(store.get("destination/cache/_alllayers/L08/R0080C0000.bundle")) == 0 || len(store.get("destination/cache/_alllayers/L08/R0080C0080.bundle")) == 0 {
 		t.Fatal("S3 cache metadata or bundles are missing")

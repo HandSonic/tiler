@@ -222,7 +222,8 @@ timeout_seconds = 60
 | 下载到本地散瓦片、MBTiles、Compact v2、S3 散瓦片 | `output.resume = true`，保持原目标与路径模板，跳过非空瓦片 |
 | 在同一数据集追加地区 | 下载用 `output.append = true`；已有数据转换用 `convert -append` |
 | 重试下载失败项 | `repair -failures ...`，只处理清单中的实际失败坐标 |
-| 转换/重建 MBTiles、PMTiles 或新建 Compact v2 | 不保存跨进程构建进度，重新执行转换；首次 S3 Compact 上传缺少 conf.xml 时需新前缀或清理未完成前缀 |
+| 转换/重建 MBTiles、PMTiles 或新建本地 Compact v2 | 不保存跨进程构建进度，重新执行转换 |
+| 首次转换上传 S3 Compact v2 | 配置发布成功后，重跑同一输入加 `-append` 补齐未完成的包；非空前缀缺少 conf.xml 时仍需新前缀或清理该未完成前缀 |
 | 向已有本地/S3 Compact v2 转换追加 | 重跑 `convert -append`，只合并涉及的 bundle，保留已完成的非空瓦片 |
 | 上传已有归档 | 有 SDK 重试，不保存跨进程分段状态；重新运行会重传所列文件 |
 
