@@ -38,7 +38,7 @@ func TestCompactConvertRoundTripAndAppend(t *testing.T) {
 	archiveTestWrite(t, filepath.Join(regionA, "8", "128", "130.png"), blue)
 	archiveTestWrite(t, filepath.Join(regionA, "7", "0", "0.png"), blue)
 	customJSON := `{"nested":true,"revision":9007199254740993}`
-	archiveTestWrite(t, filepath.Join(regionA, "metadata.json"), []byte(`{"json":{"json":`+customJSON+`,"custom_id":9007199254740993,"id":9007199254740993,"basename":false}}`))
+	archiveTestWrite(t, filepath.Join(regionA, "metadata.json"), []byte(`{"json":{"json":`+customJSON+`,"custom_id":9007199254740993,"id":9007199254740993,"basename":false,"custom_bool":true}}`))
 	mbtiles := filepath.Join(root, "region-a.mbtiles")
 	if _, err := ConvertArchive(ctx, regionA, mbtiles, ArchiveConvertOptions{}); err != nil {
 		t.Fatal(err)
@@ -77,7 +77,7 @@ func TestCompactConvertRoundTripAndAppend(t *testing.T) {
 	archiveTestWrite(t, filepath.Join(regionB, "8", "127", "129.png"), green)
 	archiveTestWrite(t, filepath.Join(regionB, "8", "129", "131.png"), green)
 	archiveTestWrite(t, filepath.Join(regionB, "9", "130", "132.png"), green)
-	archiveTestWrite(t, filepath.Join(regionB, "metadata.json"), []byte(`{"bounds":[0,0,1,1]}`))
+	archiveTestWrite(t, filepath.Join(regionB, "metadata.json"), []byte(`{"bounds":[0,0,1,1],"custom_bool":"incoming"}`))
 	// An existing conf.xml identifies the destination without -output-type.
 	if result, err := ConvertArchive(ctx, regionB, compact, ArchiveConvertOptions{Append: true, Metadata: map[string]string{"name": "combined"}}); err != nil || result.Tiles != 2 || !result.Incremental {
 		t.Fatalf("Compact v2 append: result=%+v err=%v", result, err)
@@ -197,5 +197,8 @@ func TestCompactConvertRoundTripAndAppend(t *testing.T) {
 	}
 	if string(extensions["json"]) != customJSON || string(extensions["custom_id"]) != "9007199254740993" || string(extensions["id"]) != "9007199254740993" || string(extensions["basename"]) != "false" {
 		t.Fatalf("Compact roundtrip changed JSON extensions: %s", metadata["json"])
+	}
+	if string(extensions["custom_bool"]) != "true" {
+		t.Fatalf("append let an incoming string replace old typed metadata: %v", metadata)
 	}
 }

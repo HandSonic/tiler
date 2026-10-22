@@ -346,6 +346,13 @@ func mergeDownloadVectorMetadata(existing, incoming, result map[string]string) e
 	if err != nil {
 		return fmt.Errorf("invalid download vector metadata: %w", err)
 	}
+	// An old typed extension also takes precedence over an incoming string
+	// stored outside JSON. Preserve an explicitly supplied old flat value.
+	for key := range oldJSON {
+		if _, hasFlat := existing[key]; !archiveFlatMetadataKey(key) && !hasFlat {
+			delete(result, key)
+		}
+	}
 	for key, value := range newJSON {
 		if key == "vector_layers" {
 			layers, err := mergeDownloadVectorLayers(oldJSON[key], value)
