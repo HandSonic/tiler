@@ -1,0 +1,38 @@
+# MapProxy is a separate application; tiler only creates the cache.
+# Example: mapproxy-util serve-develop docs/mapproxy-compactv2.yaml
+# Set directory to the absolute path of your cache's _alllayers directory.
+services:
+  tms:
+    use_grid_names: true
+    origin: nw
+  wmts: {}
+
+layers:
+  - name: world
+    title: Downloaded world tiles
+    sources: [world_cache]
+
+caches:
+  world_cache:
+    grids: [webmercator]
+    sources: []
+    format: image/png  # Use image/jpeg for a JPEG cache.
+    cache:
+      type: compact
+      version: 2
+      directory: /absolute/path/to/world-compact/_alllayers
+
+grids:
+  webmercator:
+    base: GLOBAL_WEBMERCATOR
+    origin: nw
+    num_levels: 31  # Expose tiler's full zoom range, 0 through 30.
+    tile_size: [256, 256]  # Set to [512, 512] for a 512-pixel cache.
+    # Without an explicit res list, MapProxy calculates resolution from tile_size:
+    # 512 pixels halves metres/pixel, preserving the same XYZ zoom and bounds.
+
+# XYZ (top-left): /tiles/world/webmercator/{z}/{x}/{y}.png
+# For image/jpeg, use .jpeg in the service URL (even if input files used .jpg).
+# WMTS: /service?SERVICE=WMTS&REQUEST=GetCapabilities
+# Strict TMS uses bottom-left Y and its global-mercator zoom is XYZ zoom minus 1.
+# XYZ z=9/x=127/y=130 corresponds to /tms/1.0.0/world/webmercator/8/127/381.png.

@@ -74,7 +74,7 @@ func (manifest *FailureManifest) SetTarget(target FailureTarget) error {
 	if err := validateFailureTarget(target); err != nil {
 		return err
 	}
-	if target.Kind == "file" || target.Kind == "mbtiles" {
+	if target.Kind == "file" || target.Kind == "mbtiles" || target.Kind == "compactv2" {
 		absolute, err := filepath.Abs(target.Path)
 		if err != nil {
 			return fmt.Errorf("resolve failure target path: %w", err)
@@ -366,7 +366,7 @@ func validateFailureTarget(target FailureTarget) error {
 		return fmt.Errorf("tile_path applies only to file or S3 failure targets")
 	}
 	switch target.Kind {
-	case "file", "mbtiles":
+	case "file", "mbtiles", "compactv2":
 		if strings.TrimSpace(target.Path) == "" || target.Bucket != "" || target.Prefix != "" || target.EndpointFingerprint != "" {
 			return fmt.Errorf("local failure target requires only a path")
 		}

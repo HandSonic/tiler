@@ -29,7 +29,7 @@ func NewRepairTaskContext(ctx context.Context, layers []Layer, tm TileMap, manif
 		return nil, fmt.Errorf("repair manifest does not identify the original output target")
 	}
 	sameFormat := data.Format == strings.ToLower(strings.TrimSpace(tm.Format))
-	if target.Kind == "mbtiles" {
+	if target.Kind == "mbtiles" || target.Kind == "compactv2" {
 		sameFormat = sameTileEncoding(data.Format, strings.TrimSpace(tm.Format))
 	}
 	if data.MapName != tm.Name || !sameFormat {
@@ -53,7 +53,7 @@ func NewRepairTaskContext(ctx context.Context, layers []Layer, tm TileMap, manif
 	}
 	var s3Destination *s3Output
 	switch target.Kind {
-	case "file", "mbtiles":
+	case "file", "mbtiles", "compactv2":
 		root, err := filepath.Abs(viper.GetString("output.directory"))
 		if err != nil {
 			return nil, err
@@ -109,7 +109,7 @@ func NewRepairTaskContext(ctx context.Context, layers []Layer, tm TileMap, manif
 
 func validateExistingRepairTarget(kind, path string) error {
 	checkedPath := path
-	if kind == "file" {
+	if kind == "file" || kind == "compactv2" {
 		checkedPath = filepath.Join(path, "metadata.json")
 	}
 	if err := validateOutputFilePath(viper.GetString("output.directory"), checkedPath); err != nil {
@@ -122,11 +122,20 @@ func validateExistingRepairTarget(kind, path string) error {
 		}
 		return fmt.Errorf("inspect original repair target: %w", err)
 	}
-	if kind == "file" && !info.IsDir() {
-		return fmt.Errorf("repair file target must be the original output directory")
+	if (kind == "file" || kind == "compactv2") && !info.IsDir() {
+		return fmt.Errorf("repair %s target must be the original output directory", kind)
 	}
 	if kind == "mbtiles" && !info.Mode().IsRegular() {
 		return fmt.Errorf("repair mbtiles target must be the original regular database file")
+	}
+	if kind == "compactv2" {
+		ok, err := compactIsDirectory(path)
+		if err != nil {
+			return fmt.Errorf("inspect original Compact v2 target: %w", err)
+		}
+		if !ok {
+			return fmt.Errorf("repair Compact v2 target must be the original cache directory")
+		}
 	}
 	return nil
 }
@@ -167,7 +176,7 @@ func (task *Task) setupFailureManifest() error {
 		task.failurePath = viper.GetString("output.failure_file")
 		if task.failurePath == "" {
 			switch task.outformat {
-			case "file":
+			case "file", "compactv2":
 				task.failurePath = filepath.Join(task.File, "failures.json")
 			case "mbtiles":
 				task.failurePath = task.File + ".failures.json"
@@ -186,7 +195,7 @@ func (task *Task) setupFailureManifest() error {
 	if err := validateFailureManifestSafety(path); err != nil {
 		return fmt.Errorf("unsafe failure manifest path: %w", err)
 	}
-	if task.outformat == "file" {
+	if task.outformat == "file" || task.outformat == "compactv2" {
 		metadata, err := filepath.Abs(filepath.Join(task.File, "metadata.json"))
 		if err != nil {
 			return err
@@ -194,6 +203,8 @@ func (task *Task) setupFailureManifest() error {
 		if strings.EqualFold(path, metadata) {
 			return fmt.Errorf("failure manifest cannot replace metadata.json")
 		}
+	}
+	if task.outformat == "file" {
 		reserved := []string{"metadata.json"}
 		root, err := filepath.Abs(task.File)
 		if err != nil {
@@ -247,7 +258,7 @@ func (task *Task) setupFailureManifest() error {
 			}
 			data := previous.Snapshot()
 			sameFormat := data.Format == strings.ToLower(strings.TrimSpace(task.TileMap.Format))
-			if task.outformat == "mbtiles" {
+			if task.outformat == "mbtiles" || task.outformat == "compactv2" {
 				sameFormat = sameTileEncoding(data.Format, strings.TrimSpace(task.TileMap.Format))
 			}
 			if data.MapName != task.Name || !sameFormat {
@@ -288,7 +299,7 @@ func sameFailureTarget(a, b FailureTarget) bool {
 		return false
 	}
 	if a.Path != b.Path {
-		if a.Kind != "file" && a.Kind != "mbtiles" {
+		if a.Kind != "file" && a.Kind != "mbtiles" && a.Kind != "compactv2" {
 			return false
 		}
 		// Existing local targets can have multiple names, including different

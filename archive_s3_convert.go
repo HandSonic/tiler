@@ -48,7 +48,7 @@ func ConvertArchive(ctx context.Context, input, output string, opts ArchiveConve
 	if _, err := archiveFormat(opts.Format); err != nil {
 		return zero, err
 	}
-	if opts.OutputKind != "" && opts.OutputKind != "file" && opts.OutputKind != "mbtiles" && opts.OutputKind != "pmtiles" {
+	if opts.OutputKind != "" && opts.OutputKind != "file" && opts.OutputKind != "mbtiles" && opts.OutputKind != "pmtiles" && opts.OutputKind != "compactv2" {
 		return zero, fmt.Errorf("unsupported output type %q", opts.OutputKind)
 	}
 	source, sourceRemote, err := parseArchiveS3Location(input)
@@ -69,9 +69,7 @@ func ConvertArchive(ctx context.Context, input, output string, opts ArchiveConve
 		return convertLocalArchive(ctx, input, output, opts)
 	}
 	if sourceRemote && destinationRemote && source.bucket == destination.bucket {
-		samePrefix := source.kind == "file" && destination.kind == "file" && strings.TrimRight(source.key, "/") == strings.TrimRight(destination.key, "/")
-		sameObject := source.kind != "file" && destination.kind != "file" && source.key == destination.key
-		if samePrefix || sameObject {
+		if strings.TrimRight(source.key, "/") == strings.TrimRight(destination.key, "/") {
 			return zero, fmt.Errorf("input and output refer to the same S3 location")
 		}
 	}
@@ -98,9 +96,20 @@ func ConvertArchive(ctx context.Context, input, output string, opts ArchiveConve
 			}
 		}
 		if source.kind == "file" {
-			input = filepath.Join(work, "s3-input.mbtiles")
-			if _, err := archiveS3TilesToMBTiles(ctx, out, source.key, input, opts); err != nil {
+			_, compact, err := archiveS3Head(ctx, out, archiveS3Key(source.key, "conf.xml"))
+			if err != nil {
 				return zero, err
+			}
+			if compact {
+				input = filepath.Join(work, "s3-input-compact")
+				if err := archiveS3DownloadCompact(ctx, out, source.key, input); err != nil {
+					return zero, err
+				}
+			} else {
+				input = filepath.Join(work, "s3-input.mbtiles")
+				if _, err := archiveS3TilesToMBTiles(ctx, out, source.key, input, opts); err != nil {
+					return zero, err
+				}
 			}
 		} else {
 			input = filepath.Join(work, "s3-input."+source.kind)
@@ -116,11 +125,22 @@ func ConvertArchive(ctx context.Context, input, output string, opts ArchiveConve
 	if err != nil {
 		return zero, err
 	}
+	if destination.kind == "compactv2" {
+		if destination.key == "" || !strings.HasSuffix(destination.key, "/") {
+			return zero, fmt.Errorf("S3 Compact v2 output requires a named prefix ending in /")
+		}
+		return archiveS3ConvertToCompact(ctx, out, input, destination.key, work, opts)
+	}
 	if destination.kind != "file" {
 		if destination.key == "" || strings.HasSuffix(destination.key, "/") {
 			return zero, fmt.Errorf("S3 archive output requires an object key")
 		}
 		return archiveS3ConvertToObject(ctx, out, input, destination, work, opts)
+	}
+	if _, compact, err := archiveS3Head(ctx, out, archiveS3Key(destination.key, "conf.xml")); err != nil {
+		return zero, err
+	} else if compact {
+		return zero, fmt.Errorf("S3 output is a Compact cache; use -output-type compactv2 and a prefix ending in /")
 	}
 	return archiveS3ConvertToTiles(ctx, out, input, destination.key, work, opts)
 }
@@ -234,13 +254,24 @@ func archiveS3DetectArchiveKind(ctx context.Context, out *s3Output, key string) 
 }
 
 func archiveS3Download(ctx context.Context, out *s3Output, key, filename string) error {
+	return archiveS3DownloadVersion(ctx, out, key, filename, "")
+}
+
+func archiveS3DownloadVersion(ctx context.Context, out *s3Output, key, filename, expectedETag string) error {
 	request, cancel := context.WithTimeout(ctx, time.Hour)
 	defer cancel()
-	object, err := out.client.GetObject(request, &s3.GetObjectInput{Bucket: aws.String(out.bucket), Key: aws.String(key)})
+	input := &s3.GetObjectInput{Bucket: aws.String(out.bucket), Key: aws.String(key)}
+	if expectedETag != "" {
+		input.IfMatch = aws.String(expectedETag)
+	}
+	object, err := out.client.GetObject(request, input)
 	if err != nil {
 		return fmt.Errorf("read S3 archive %q: %w", key, err)
 	}
 	defer object.Body.Close()
+	if actual := aws.ToString(object.ETag); expectedETag != "" && actual != "" && actual != expectedETag {
+		return fmt.Errorf("S3 object %q changed since it was listed", key)
+	}
 	encoded := &archiveS3CountingReader{Reader: object.Body}
 	decoded, err := archiveS3DecodeContent(encoded, aws.ToString(object.ContentEncoding))
 	if err != nil {

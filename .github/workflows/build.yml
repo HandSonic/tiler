@@ -26,6 +26,15 @@ jobs:
           # compression boundary under the race instrumenter.
           go test -short -race ./...
           go vet ./...
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify Compact v2 with MapProxy
+        run: |
+          python -m venv "$RUNNER_TEMP/mapproxy"
+          "$RUNNER_TEMP/mapproxy/bin/pip" install 'MapProxy==6.0.1' pyproj
+          go build -o "$RUNNER_TEMP/tiler" .
+          "$RUNNER_TEMP/mapproxy/bin/python" scripts/check-mapproxy.py --tiler "$RUNNER_TEMP/tiler"
       - name: Install the MSVCRT cross compiler
         shell: bash
         run: |

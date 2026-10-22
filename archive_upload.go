@@ -49,13 +49,14 @@ type archiveUploadFile struct {
 	info os.FileInfo
 }
 
-// UploadArchives uploads explicit .mbtiles/.pmtiles files or recursively finds
-// those archives below input directories. A directory contributes its relative
-// paths; an explicit file contributes its basename. All inputs and destination
+// UploadArchives uploads explicit .mbtiles/.pmtiles files, Compact v2 cache
+// directories, or recursively finds archives below other input directories.
+// A Compact cache uploads its bundles before metadata. A directory contributes
+// its relative paths; an explicit file contributes its basename. All inputs and destination
 // key collisions are checked before any network request. Existing S3 keys are
 // replaced only when their complete upload succeeds.
 //
-// Files are processed in input order and directory entries in lexical order.
+// Files are processed in input order and bundle/archive entries in lexical order.
 // On failure the result contains only the files already uploaded completely.
 // Close SQLite writers and checkpoint MBTiles databases before uploading them;
 // an uncheckpointed WAL or active rollback journal means the standalone
@@ -125,7 +126,7 @@ func UploadArchives(ctx context.Context, out *s3Output, inputs []string, opts Ar
 
 func planArchiveUploads(ctx context.Context, prefix string, inputs []string) ([]archiveUploadFile, error) {
 	if len(inputs) == 0 {
-		return nil, fmt.Errorf("provide at least one .mbtiles/.pmtiles archive or directory")
+		return nil, fmt.Errorf("provide at least one .mbtiles/.pmtiles archive or directory (including Compact v2)")
 	}
 	var err error
 	prefix, err = normalizeS3Prefix(prefix)
@@ -134,11 +135,11 @@ func planArchiveUploads(ctx context.Context, prefix string, inputs []string) ([]
 	}
 	var files []archiveUploadFile
 	keys := make(map[string]string)
-	add := func(filename, relative string, info os.FileInfo) error {
+	add := func(filename, relative string, info os.FileInfo, compact bool) error {
 		if !info.Mode().IsRegular() {
 			return fmt.Errorf("archive input %s is not a regular file", filename)
 		}
-		if !isArchiveFilename(filename) {
+		if !compact && !isArchiveFilename(filename) {
 			return fmt.Errorf("archive input %s must have a .mbtiles or .pmtiles extension", filename)
 		}
 		if info.Size() == 0 {
@@ -186,11 +187,21 @@ func planArchiveUploads(ctx context.Context, prefix string, inputs []string) ([]
 			return nil, fmt.Errorf("archive input %s is a symbolic link", input)
 		}
 		if !info.IsDir() {
-			if err := add(absolute, filepath.Base(absolute), info); err != nil {
+			if err := add(absolute, filepath.Base(absolute), info, false); err != nil {
 				return nil, err
 			}
 			continue
 		}
+		compact, err := compactIsDirectory(absolute)
+		if err != nil {
+			return nil, err
+		}
+		if compact {
+			if _, err := compactReadMetadata(absolute); err != nil {
+				return nil, err
+			}
+		}
+		cacheMetadata := make(map[string]os.FileInfo)
 		err = filepath.WalkDir(absolute, func(filename string, entry fs.DirEntry, walkErr error) error {
 			if walkErr != nil {
 				return walkErr
@@ -211,21 +222,45 @@ func planArchiveUploads(ctx context.Context, prefix string, inputs []string) ([]
 			if !entryInfo.Mode().IsRegular() {
 				return fmt.Errorf("archive directory contains non-regular file %s", filename)
 			}
-			if !isArchiveFilename(filename) {
-				return nil
-			}
 			relative, err := filepath.Rel(absolute, filename)
 			if err != nil {
 				return err
 			}
-			return add(filename, relative, entryInfo)
+			if compact {
+				metadata, allowed := compactCacheFile(filepath.ToSlash(relative))
+				if !allowed {
+					if strings.HasSuffix(relative, ".bundle") {
+						return fmt.Errorf("invalid Compact bundle path %q", relative)
+					}
+					return nil
+				}
+				if metadata {
+					if entryInfo.Size() > maxMetadataBytes {
+						return fmt.Errorf("Compact metadata %s exceeds %d bytes", filename, maxMetadataBytes)
+					}
+					cacheMetadata[relative] = entryInfo
+					return nil
+				}
+			} else if !isArchiveFilename(filename) {
+				return nil
+			}
+			return add(filename, relative, entryInfo, compact)
 		})
 		if err != nil {
 			return nil, fmt.Errorf("scan archive directory %s: %w", input, err)
 		}
+		// conf.xml is also the remote cache detection marker. Upload it last;
+		// this is not an atomic transaction across all objects of a cache.
+		for _, relative := range []string{"metadata.json", "conf.cdi", "conf.xml"} {
+			if info, ok := cacheMetadata[relative]; ok {
+				if err := add(filepath.Join(absolute, relative), relative, info, true); err != nil {
+					return nil, err
+				}
+			}
+		}
 	}
 	if len(files) == 0 {
-		return nil, fmt.Errorf("no .mbtiles/.pmtiles archives found in the inputs")
+		return nil, fmt.Errorf("no .mbtiles/.pmtiles archives or Compact v2 cache found in the inputs")
 	}
 	return files, nil
 }
@@ -258,9 +293,16 @@ func uploadArchiveFile(parent context.Context, out *s3Output, uploader *manager.
 	if err := checkArchiveUploadWAL(input.Path); err != nil {
 		return err
 	}
-	contentType := "application/vnd.pmtiles"
-	if strings.EqualFold(filepath.Ext(input.Path), ".mbtiles") {
+	contentType := "application/octet-stream"
+	switch strings.ToLower(filepath.Ext(input.Path)) {
+	case ".mbtiles":
 		contentType = "application/vnd.sqlite3"
+	case ".pmtiles":
+		contentType = "application/vnd.pmtiles"
+	case ".xml", ".cdi":
+		contentType = "application/xml"
+	case ".json":
+		contentType = "application/json"
 	}
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()

@@ -2,16 +2,16 @@
 	version = "v 0.1.0"
 	title = "MapCloud Tiler"
 [output]
-	#can be mbtiles/file/s3
+	#can be mbtiles/file/compactv2/s3; compactv2 packs local PNG/JPEG tiles
 	format ="file"
-	#file/mbtiles output dir; also holds the default local S3 failure manifest
+	#file/mbtiles/compactv2 output dir; also holds the default local S3 failure manifest
 	directory ="output"
 	#skip existing nonempty tiles; keep the same source and output settings
 	resume = false
 	#append another region to the same dataset; implies resume
-	#file/mbtiles append requires a fixed nonempty name below
+	#file/mbtiles/compactv2 append requires a fixed nonempty name below
 	append = false
-	#optional fixed file/mbtiles basename; resume defaults to Name-zmin-max
+	#optional fixed local output basename; resume defaults to Name-zmin-max
 	name = ""
 	#relative tile layout for file/S3 outputs; keep unchanged when resuming
 	#also supports {z}/{y}/{x}.{format}, {-y}, fixed subdirs, or no extension

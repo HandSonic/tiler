@@ -2,9 +2,11 @@
 
 [English](README-EN.md)
 
-按 GeoJSON 范围和缩放级别并发下载地图瓦片，支持本地文件、MBTiles（SQLite）及 S3 输出。数据源需使用标准 Web Mercator XYZ/TMS 瓦片地址；URL 中使用 `{z}`、`{x}`、`{y}`，需要反转行号时使用 `{-y}`。可通过多个 `[[lrs]]` 为不同级别设置不同范围。
+按 GeoJSON 范围和缩放级别并发下载地图瓦片，支持本地文件、MBTiles（SQLite）、Compact v2 及 S3 输出。数据源需使用标准 Web Mercator XYZ/TMS 瓦片地址；URL 中使用 `{z}`、`{x}`、`{y}`，需要反转行号时使用 `{-y}`。可通过多个 `[[lrs]]` 为不同级别设置不同范围。
 
-另有 `convert` 在本地/S3 瓦片目录、MBTiles、PMTiles 之间转换和追加，`upload` 将已有归档上传到 S3/MinIO，`repair` 按失败清单补下载，均集成在同一个可执行文件中。最近一轮修复与验证见 [深入审计记录](docs/audit-2026-10-21.md)。
+另有 `convert` 在本地/S3 瓦片目录、MBTiles、PMTiles、Compact v2 之间转换和追加，`upload` 将已有归档或 Compact 缓存上传到 S3/MinIO，`repair` 按失败清单补下载，均集成在同一个可执行文件中。最近一轮修复与验证见 [深入审计记录](docs/audit-2026-10-21.md)。
+
+大范围栅格下载可用 `output.format = "compactv2"`：每个 bundle 固定容纳一个级别内最多 128×128 张瓦片，直接写入 bundle，不产生散图片。支持续传、追加、补洞；外部 MapProxy 可把整套目录作为同一图层读取。配置和真实 MapProxy 验证见 [Compact v2 说明](docs/compact-v2.md) 与 [MapProxy 配置示例](docs/mapproxy-compactv2.yaml)。
 
 `lrs.geojson` 支持 FeatureCollection、单个 Feature、裸 Geometry，以及带 `geojson` 几何字段的 Nominatim 数组，无需手工包装为 FeatureCollection。
 
@@ -81,11 +83,11 @@ tile_path = "{z}/{y}/{x}.{format}"
 append = true
 ```
 
-模板支持 `{z}`、`{x}`、`{y}`、`{-y}`、`{format}`；`{-y}` 为 `2^z-1-y`。必须包含 z、x 及 y 或 -y，可添加固定子目录、文件名前缀或省略扩展名，例如 `tiles/{z}/{x}_{y}`。路径必须是相对路径，数字坐标之间须有非数字分隔符；`{x}{y}` 会产生坐标歧义，因而被拒绝。MBTiles/PMTiles 的内部存储遵循各自规范，不使用目录模板。
+模板支持 `{z}`、`{x}`、`{y}`、`{-y}`、`{format}`；`{-y}` 为 `2^z-1-y`。必须包含 z、x 及 y 或 -y，可添加固定子目录、文件名前缀或省略扩展名，例如 `tiles/{z}/{x}_{y}`。路径必须是相对路径，数字坐标之间须有非数字分隔符；`{x}{y}` 会产生坐标歧义，因而被拒绝。MBTiles/PMTiles/Compact v2 的内部存储遵循各自规范，不使用目录模板。
 
-`append = true` 同时启用按瓦片恢复。下载完 A 地区后，保持同一数据源、格式、路径模板和输出目标，把 `[[lrs]]` 范围换成 B 地区再运行：已有非空瓦片保留，新瓦片写入同一数据集。本地文件/MBTiles 必须设置固定 `output.name`，其元数据范围与层级会合并；S3 使用同一 bucket/prefix 追加对象。更换模板应使用新目录或新 prefix，不能沿用旧布局续传。
+`append = true` 同时启用按瓦片恢复。下载完 A 地区后，保持同一数据源、格式、路径模板和输出目标，把 `[[lrs]]` 范围换成 B 地区再运行：已有非空瓦片保留，新瓦片写入同一数据集。本地文件/MBTiles/Compact v2 必须设置固定 `output.name`，其元数据范围与层级会合并；S3 使用同一 bucket/prefix 追加对象。更换模板应使用新目录或新 prefix，不能沿用旧布局续传。
 
-下载可直接输出文件、MBTiles 或 S3。要累加 PMTiles，可先持续追加 MBTiles 工作库再转换，或用下述 `convert -append` 合并新地区。
+下载可直接输出文件、MBTiles、Compact v2 或 S3。要累加 PMTiles，可先持续追加 MBTiles 工作库再转换，或用下述 `convert -append` 合并新地区。
 
 ## 离线转换、归档上传与补洞
 
@@ -108,11 +110,11 @@ append = true
 ./tiler repair -c conf.toml -failures output/basemap.mbtiles.failures.json
 ```
 
-`convert` 支持本地/S3 瓦片目录、MBTiles、PMTiles v3 之间双向转换；S3 归档地址可写成 `s3://bucket/maps/basemap.pmtiles`，瓦片前缀使用结尾 `/`。纯本地转换默认不读取 TOML，S3 转换用 `-c` 读取 endpoint、region 和凭证配置，bucket/对象路径由 URI 指定。目录元数据中的 `tile_path` 可自动识别，也可用 `-input-tile-path` 指定输入布局，`-tile-path` 指定输出布局。
+`convert` 支持本地/S3 瓦片目录、MBTiles、PMTiles v3、Compact v2 之间双向转换；S3 归档地址可写成 `s3://bucket/maps/basemap.pmtiles`，瓦片前缀使用结尾 `/`。纯本地转换默认不读取 TOML，S3 转换用 `-c` 读取 endpoint、region 和凭证配置，bucket/对象路径由 URI 指定。目录元数据中的 `tile_path` 可自动识别，也可用 `-input-tile-path` 指定输入布局，`-tile-path` 指定输出布局。
 
-MBTiles 支持 z0–30，PMTiles 支持 z0–26。默认拒绝已有目标，`-overwrite` 允许替换，`-append` 则保留旧坐标并合并新瓦片。归档追加先合并再完整重建并替换；本地目录替换会先完整暂存，目录追加和 S3 散瓦片则逐个写入，中断后可能已有部分文件/对象完成。转换构建不保存跨进程断点。PBF 在归档中规范为一层 gzip，本地目录导出为原始 PBF；PBF 转 MBTiles/PMTiles 还需有效的 `vector_layers`，可从输入元数据或 `-metadata metadata.json` 提供。构建归档使用临时数据库/归档并清理，不会额外解包出零散图片；明确输出文件目录时才生成单张瓦片。
+MBTiles 支持 z0–30，PMTiles 支持 z0–26。默认拒绝已有目标，`-overwrite` 允许替换，`-append` 则保留旧坐标并合并新瓦片。归档追加先合并再完整重建并替换；本地目录替换会先完整暂存，散瓦片目录追加和 S3 散瓦片则逐个写入，中断后可能已有部分文件/对象完成。转换构建不保存跨进程断点。PBF 在归档中规范为一层 gzip，本地目录导出为原始 PBF；PBF 转 MBTiles/PMTiles 还需有效的 `vector_layers`，可从输入元数据或 `-metadata metadata.json` 提供。构建归档使用临时数据库/归档并清理，不会额外解包出零散图片；明确输出文件目录时才生成单张瓦片。
 
-`upload` 可接收多个 `.mbtiles`、`.pmtiles` 文件或目录，递归上传目录内的归档并保留相对路径。默认每个文件超时 1 小时，初始分段 8 MiB、每文件并发 3；上传完成才替换同 key 对象。失败后尝试中止当前分段上传并报告已完成数量，不提供跨进程的分段续传。上传 MBTiles 前须停止写入并完成 WAL checkpoint；存在非空 `-wal` 或活跃回滚事务日志时会拒绝上传。
+`upload` 还可接收显式 Compact v2 根目录（规则见专门说明）；也可接收多个 `.mbtiles`、`.pmtiles` 文件或目录，递归上传目录内的归档并保留相对路径。默认每个文件超时 1 小时，初始分段 8 MiB、每文件并发 3；上传完成才替换同 key 对象。失败后尝试中止当前分段上传并报告已完成数量，不提供跨进程的分段续传。上传 MBTiles 前须停止写入并完成 WAL checkpoint；存在非空 `-wal` 或活跃回滚事务日志时会拒绝上传。
 
 下载失败时自动写出 JSON 清单，日志会显示路径；可用 `output.failure_file` 指定 `.json` 路径。首次成功的 MBTiles 下载不会额外创建失败清单。补洞沿用清单记录的原目标，必须保持地图名、格式、数据源、级别和目标配置一致；可更新 token 等认证参数。清单记录坐标、来源指纹和脱敏错误，不保存原始数据源 URL 或密钥。Ctrl+C 后尚未调度的范围不在失败清单内，恢复整个中断任务仍应使用 `output.resume = true`。
 
@@ -120,8 +122,8 @@ MBTiles 支持 z0–30，PMTiles 支持 z0–26。默认拒绝已有目标，`-o
 
 ## 恢复、格式与任务控制
 
-- `output.resume = true`：跳过已保存的非空瓦片。文件和 MBTiles 默认使用稳定基名 `Name-zmin-max`；可用 `output.name` 指定基名。恢复时必须保持数据源与输出路径配置一致。旧版带随机 ID 的产物可把其完整基名填入 `output.name`（MBTiles 不含 `.mbtiles`），或先重命名为新的稳定名称。
-- `output.append = true`：在同一目标新增地区，并合并本地目录/MBTiles 的范围和层级；文件与 MBTiles 需固定 `output.name`。它包含 resume 行为，重合坐标保留已有非空瓦片。`output.tile_path` 同时用于文件/S3 写入、恢复和补洞，变更布局时应更换目标。
+- `output.resume = true`：跳过已保存的非空瓦片。文件、MBTiles 和 Compact v2 默认使用稳定基名 `Name-zmin-max`；可用 `output.name` 指定基名。恢复时必须保持数据源与输出路径配置一致。旧版带随机 ID 的产物可把其完整基名填入 `output.name`（MBTiles 不含 `.mbtiles`），或先重命名为新的稳定名称。
+- `output.append = true`：在同一目标新增地区，并合并本地目录/MBTiles/Compact v2 的范围和层级；文件、MBTiles 与 Compact v2 需固定 `output.name`。它包含 resume 行为，重合坐标保留已有非空瓦片。`output.tile_path` 同时用于文件/S3 写入、恢复和补洞，变更布局时应更换目标。
 - `tm.format = "png"` / `"jpg"` 会实际转换图像编码。PBF 的 `output.gzip_pbf` 未配置时，本地文件默认原始数据，MBTiles/S3 默认 gzip；文件/S3 可显式覆盖；MBTiles 要求 gzip PBF，不能设为 false。S3 会按内容设置 Content-Encoding。
 - `task.timeout_seconds = 30`、`task.retries = 3` 控制请求超时和失败重试；重试网络错误及 HTTP 408、429、5xx，遵循标准重定向及 HTTP(S) 代理环境变量。可按数据源设置 `task.user_agent`、`task.referer`。
 - `./tiler -i -c conf.toml` 开启交互：输入 `p` / `r` / `q` 后按 Enter 暂停、继续、取消。暂停停止调度新瓦片，已发请求仍会完成。Ctrl+C 取消并保留已存瓦片，下次设置 `resume = true` 重启。

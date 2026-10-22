@@ -39,12 +39,13 @@ func convertLocalArchive(ctx context.Context, input, output string, opts Archive
 		return result, fmt.Errorf("open archive input: %w", err)
 	}
 	if !info.IsDir() && !info.Mode().IsRegular() {
-		return result, fmt.Errorf("input must be a tile directory, MBTiles or PMTiles file")
+		return result, fmt.Errorf("input must be a tile or Compact v2 directory, MBTiles or PMTiles file")
 	}
 	kind, err := archiveOutputKind(output, opts.OutputKind)
 	if err != nil {
 		return result, err
 	}
+	directoryOutput := kind == "file" || kind == "compactv2"
 	destination, err := filepath.Abs(output)
 	if err != nil {
 		return result, err
@@ -66,7 +67,7 @@ func convertLocalArchive(ctx context.Context, input, output string, opts Archive
 			return result, fmt.Errorf("output cannot be inside the input tile directory")
 		}
 	}
-	if kind == "file" {
+	if directoryOutput {
 		if archivePathContains(resolvedDestination, resolvedInput) {
 			return result, fmt.Errorf("output tile directory cannot contain the input path")
 		}
@@ -77,7 +78,7 @@ func convertLocalArchive(ctx context.Context, input, output string, opts Archive
 		if !opts.Overwrite && !opts.Append {
 			return result, fmt.Errorf("output already exists: %s (use -overwrite or -append)", output)
 		}
-		if (kind == "file" && !dst.IsDir()) || (kind != "file" && !dst.Mode().IsRegular()) {
+		if (directoryOutput && !dst.IsDir()) || (!directoryOutput && !dst.Mode().IsRegular()) {
 			return result, fmt.Errorf("output type does not match destination; symbolic links are not supported")
 		}
 		if os.SameFile(info, dst) {
@@ -86,7 +87,16 @@ func convertLocalArchive(ctx context.Context, input, output string, opts Archive
 	} else if !os.IsNotExist(statErr) {
 		return result, statErr
 	}
-	if existing && kind != "file" {
+	if existing && opts.Append && directoryOutput {
+		compact, err := compactIsDirectory(destination)
+		if err != nil {
+			return result, err
+		}
+		if compact != (kind == "compactv2") {
+			return result, fmt.Errorf("append output type does not match the existing directory")
+		}
+	}
+	if existing && !directoryOutput {
 		if err := archiveCheckArchiveDestination(destination, kind); err != nil {
 			return result, err
 		}
@@ -182,6 +192,8 @@ func convertLocalArchive(ctx context.Context, input, output string, opts Archive
 					return archiveWalkMB(ctx, path, visit)
 				case "pmtiles":
 					return archiveWalkPM(ctx, path, visit)
+				case "compactv2":
+					return archiveWalkCompact(ctx, path, visit)
 				default:
 					return archiveWalkDirectoryCanonical(ctx, path, pattern, true, visit)
 				}
@@ -207,7 +219,7 @@ func convertLocalArchive(ctx context.Context, input, output string, opts Archive
 			if targetFormat == "" {
 				targetFormat = sourceFormat
 			}
-			if existing && opts.Append && kind == "file" && !keepExisting && targetFormat != sourceFormat {
+			if existing && opts.Append && directoryOutput && !keepExisting && targetFormat != sourceFormat {
 				return fmt.Errorf("directory append cannot change the existing tile format")
 			}
 			if opts.Format == "" && targetFormat != sourceFormat {
@@ -248,6 +260,15 @@ func convertLocalArchive(ctx context.Context, input, output string, opts Archive
 			targetFormat, err = archiveFormat(incomingMetadata["format"])
 			if err != nil {
 				return err
+			}
+		}
+		if existingInput && kind == "compactv2" {
+			originalFormat, err := archiveFormat(incomingMetadata["format"])
+			if err != nil {
+				return err
+			}
+			if originalFormat != "" && targetFormat != originalFormat {
+				return fmt.Errorf("Compact v2 append cannot change the existing tile format")
 			}
 		}
 		if metadata == nil {
@@ -319,6 +340,16 @@ func convertLocalArchive(ctx context.Context, input, output string, opts Archive
 		}
 		stagedDir := filepath.Join(work, "tiles")
 		if err := archiveExportFiles(ctx, stage, stagedDir, outputPattern, false); err != nil {
+			return result, err
+		}
+		if err := ctx.Err(); err != nil {
+			return result, err
+		}
+		return result, archivePublishDirectory(stagedDir, destination, existing)
+	}
+	if kind == "compactv2" {
+		stagedDir := filepath.Join(work, "compact")
+		if err := archiveExportCompact(ctx, stage, stagedDir, metadata); err != nil {
 			return result, err
 		}
 		if err := ctx.Err(); err != nil {
@@ -449,16 +480,23 @@ func checkSQLiteSidecars(destination string) error {
 func archiveOutputKind(output, requested string) (string, error) {
 	kind := strings.ToLower(strings.TrimSpace(requested))
 	if kind != "" {
-		if kind == "file" || kind == "mbtiles" || kind == "pmtiles" {
+		if kind == "file" || kind == "mbtiles" || kind == "pmtiles" || kind == "compactv2" {
 			extension := strings.ToLower(filepath.Ext(output))
 			if kind != "file" && (extension == ".mbtiles" || extension == ".pmtiles") && extension != "."+kind {
 				return "", fmt.Errorf("output type %s conflicts with the %s filename extension", kind, extension)
 			}
 			return kind, nil
 		}
-		return "", fmt.Errorf("output type must be file, mbtiles or pmtiles")
+		return "", fmt.Errorf("output type must be file, mbtiles, pmtiles or compactv2")
 	}
 	if info, err := os.Stat(output); err == nil && info.IsDir() {
+		compact, err := compactIsDirectory(output)
+		if err != nil {
+			return "", err
+		}
+		if compact {
+			return "compactv2", nil
+		}
 		return "file", nil
 	}
 	switch strings.ToLower(filepath.Ext(output)) {
@@ -469,7 +507,7 @@ func archiveOutputKind(output, requested string) (string, error) {
 	case "":
 		return "file", nil
 	default:
-		return "", fmt.Errorf("output must end in .mbtiles or .pmtiles, or use -output-type file")
+		return "", fmt.Errorf("output must end in .mbtiles or .pmtiles, or use -output-type file or compactv2")
 	}
 }
 
@@ -486,6 +524,13 @@ func archiveWalkLocal(ctx context.Context, input, pattern string, visit archiveV
 		return nil, fmt.Errorf("symbolic archive inputs are not supported")
 	}
 	if info.IsDir() {
+		compact, err := compactIsDirectory(input)
+		if err != nil {
+			return nil, err
+		}
+		if compact {
+			return archiveWalkCompact(ctx, input, visit)
+		}
 		return archiveWalkDirectory(ctx, input, pattern, visit)
 	}
 	if !info.Mode().IsRegular() {
@@ -518,7 +563,7 @@ func archiveWalkLocal(ctx context.Context, input, pattern string, visit archiveV
 		case bytes.HasPrefix(header[:n], []byte("PMTiles")):
 			return archiveWalkPM(ctx, input, visit)
 		default:
-			return nil, fmt.Errorf("input must be a tile directory, MBTiles or PMTiles archive")
+			return nil, fmt.Errorf("input must be a tile or Compact v2 directory, MBTiles or PMTiles archive")
 		}
 	}
 }
@@ -654,6 +699,24 @@ func archiveWalkMB(ctx context.Context, input string, visit archiveVisit) (map[s
 	}
 	delete(metadata, "tile_path")
 	return metadata, nil
+}
+
+// archiveExportCompact consumes the validated staging database without creating
+// individual tile files. The caller publishes the complete directory on success.
+func archiveExportCompact(ctx context.Context, input, output string, metadata map[string]string) (err error) {
+	cache, err := compactOpen(output, metadata, false)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if closeErr := cache.Close(); err == nil {
+			err = closeErr
+		}
+	}()
+	_, err = archiveWalkMB(ctx, input, func(z int, x, y uint32, body []byte, format string) error {
+		return cache.Save(ctx, z, x, y, body)
+	})
+	return err
 }
 
 func archiveExportFiles(ctx context.Context, input, output, pattern string, appendExisting bool) error {

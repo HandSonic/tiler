@@ -51,6 +51,7 @@ type Task struct {
 	outformat    string
 	tilePath     string
 	s3           *s3Output
+	compact      *compactCache
 	errMu        sync.Mutex
 	firstErr     error
 	initErr      error
@@ -248,9 +249,16 @@ func newDownloadTaskContext(parent context.Context, layers []Layer, m TileMap, m
 		}
 	}
 	task.resume = viper.GetBool("output.resume") || viper.GetBool("output.append")
-	if viper.GetBool("output.append") && !task.repairMode && (task.outformat == "file" || task.outformat == "mbtiles") && strings.TrimSpace(viper.GetString("output.name")) == "" {
-		task.initErr = fmt.Errorf("output.append requires a fixed output.name for file or mbtiles output")
+	if viper.GetBool("output.append") && !task.repairMode && (task.outformat == "file" || task.outformat == "mbtiles" || task.outformat == "compactv2") && strings.TrimSpace(viper.GetString("output.name")) == "" {
+		task.initErr = fmt.Errorf("output.append requires a fixed output.name for file, mbtiles or compactv2 output")
 		return &task
+	}
+	if task.outformat == "compactv2" {
+		format, err := archiveFormat(m.Format)
+		if err != nil || (format != PNG && format != JPG) {
+			task.initErr = fmt.Errorf("Compact v2 supports PNG or JPEG raster tiles only")
+			return &task
+		}
 	}
 	task.gzipPBF = task.outformat != "file"
 	if viper.IsSet("output.gzip_pbf") {
@@ -466,6 +474,9 @@ func (task *Task) saveTile(tile Tile) error {
 	if task.outformat == "s3" {
 		return task.s3.saveContext(task.ctx, tile, task.TileMap.Format)
 	}
+	if task.outformat == "compactv2" {
+		return task.compact.Save(task.ctx, int(tile.T.Z), tile.T.X, tile.T.Y, tile.C)
+	}
 	return saveToFiles(tile, task)
 }
 
@@ -675,7 +686,7 @@ func (task *Task) Download() error {
 			task.s3 = out
 		}
 		task.s3.tilePath = task.tilePath
-	case "file", "mbtiles":
+	case "file", "mbtiles", "compactv2":
 		if task.File == "" {
 			file, err := task.outputPath()
 			if err != nil {
@@ -689,7 +700,7 @@ func (task *Task) Download() error {
 			}
 		}
 	default:
-		return fmt.Errorf("unsupported output.format %q (expected file, mbtiles or s3)", task.outformat)
+		return fmt.Errorf("unsupported output.format %q (expected file, mbtiles, compactv2 or s3)", task.outformat)
 	}
 	if err := task.setupFailureManifest(); err != nil {
 		return err
@@ -698,6 +709,23 @@ func (task *Task) Download() error {
 		return err
 	}
 	switch task.outformat {
+	case "compactv2":
+		if err := task.validateFileOutputSafety(); err != nil {
+			return err
+		}
+		metadata := task.MetaItems()
+		if task.repairMode {
+			var err error
+			metadata, err = compactReadMetadata(task.File)
+			if err != nil {
+				return fmt.Errorf("read original Compact v2 metadata: %w", err)
+			}
+		}
+		var err error
+		task.compact, err = compactOpen(task.File, metadata, task.resume)
+		if err != nil {
+			return fmt.Errorf("initialize Compact v2: %w", err)
+		}
 	case "mbtiles":
 		if err := task.SetupMBTileTables(); err != nil {
 			return fmt.Errorf("initialize mbtiles: %w", err)
@@ -748,6 +776,13 @@ func (task *Task) Download() error {
 		close(task.savingpipe)
 		<-saveDone
 		saveDone = nil
+	}
+	// All tile writes have finished. Finalize metadata even after cancellation
+	// so already downloaded bundles can be resumed or served independently.
+	if task.compact != nil {
+		if err := task.compact.Close(); err != nil {
+			task.recordError(fmt.Errorf("finalize Compact v2: %w", err))
+		}
 	}
 	if err := task.persistFailureManifest(); err != nil {
 		task.recordError(err)

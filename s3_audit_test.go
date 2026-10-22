@@ -123,7 +123,7 @@ func TestAuditS3ImportRejectsObjectChangedSinceListing(t *testing.T) {
 		case r.URL.Query().Get("list-type") == "2":
 			w.Header().Set("Content-Type", "application/xml")
 			fmt.Fprintf(w, `<ListBucketResult><Contents><Key>tiles/0/0/0.png</Key><Size>%d</Size><ETag>"before"</ETag></Contents><IsTruncated>false</IsTruncated></ListBucketResult>`, len(body))
-		case r.URL.Path == "/source/tiles/metadata.json":
+		case r.URL.Path == "/source/tiles/metadata.json", r.URL.Path == "/source/tiles/conf.xml":
 			testS3Error(w, http.StatusNotFound, "NoSuchKey")
 		case r.URL.Path == "/source/tiles/0/0/0.png":
 			match = r.Header.Get("If-Match")

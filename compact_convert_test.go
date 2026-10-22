@@ -1,0 +1,89 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"image"
+	"image/color"
+	"image/draw"
+	"image/png"
+	"path/filepath"
+	"testing"
+)
+
+func TestCompactConvertRoundTripAndAppend(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	makePNG := func(c color.Color) []byte {
+		picture := image.NewRGBA(image.Rect(0, 0, 256, 256))
+		draw.Draw(picture, picture.Bounds(), image.NewUniform(c), image.Point{}, draw.Src)
+		var out bytes.Buffer
+		if err := png.Encode(&out, picture); err != nil {
+			t.Fatal(err)
+		}
+		return out.Bytes()
+	}
+	red := makePNG(color.RGBA{R: 255, A: 255})
+	blue := makePNG(color.RGBA{B: 255, A: 255})
+	green := makePNG(color.RGBA{G: 255, A: 255})
+	regionA := filepath.Join(root, "region-a")
+	// Distinct rows/columns on both sides of a bundle boundary expose axis
+	// reversal and errors in selecting the bundle during a conversion.
+	archiveTestWrite(t, filepath.Join(regionA, "8", "127", "129.png"), red)
+	archiveTestWrite(t, filepath.Join(regionA, "8", "128", "130.png"), blue)
+	mbtiles := filepath.Join(root, "region-a.mbtiles")
+	if _, err := ConvertArchive(ctx, regionA, mbtiles, ArchiveConvertOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	compact := filepath.Join(root, "compact")
+	if result, err := ConvertArchive(ctx, mbtiles, compact, ArchiveConvertOptions{OutputKind: "compactv2"}); err != nil || result.Tiles != 2 {
+		t.Fatalf("MBTiles to Compact v2: result=%+v err=%v", result, err)
+	}
+	regionB := filepath.Join(root, "region-b")
+	archiveTestWrite(t, filepath.Join(regionB, "8", "127", "129.png"), green)
+	archiveTestWrite(t, filepath.Join(regionB, "8", "129", "131.png"), green)
+	// An existing conf.xml identifies the destination without -output-type.
+	if result, err := ConvertArchive(ctx, regionB, compact, ArchiveConvertOptions{Append: true}); err != nil || result.Tiles != 3 {
+		t.Fatalf("Compact v2 append: result=%+v err=%v", result, err)
+	}
+	expected := map[string][]byte{"8/127/129": red, "8/128/130": blue, "8/129/131": green}
+	checkTiles := func(path string) {
+		t.Helper()
+		actual := archiveV2Snapshot(t, path, "")
+		if len(actual) != len(expected) {
+			t.Fatalf("%s: got %d tiles, want %d", path, len(actual), len(expected))
+		}
+		for key, want := range expected {
+			if !bytes.Equal(actual[key], want) {
+				t.Fatalf("%s: tile %s changed", path, key)
+			}
+		}
+	}
+	checkTiles(compact)
+	if _, err := ConvertArchive(ctx, regionB, compact, ArchiveConvertOptions{Append: true, OutputKind: "file"}); err == nil {
+		t.Fatal("loose tile append accepted a Compact v2 destination")
+	}
+
+	// A size unsupported by Compact v2 fails during export, after SQLite
+	// staging, and must leave the published directory intact.
+	invalid := filepath.Join(root, "wrong-size")
+	archiveTestWrite(t, filepath.Join(invalid, "8", "130", "132.png"), archiveTestPNG(t, color.White))
+	if _, err := ConvertArchive(ctx, invalid, compact, ArchiveConvertOptions{Append: true}); err == nil {
+		t.Fatal("Compact v2 accepted a 2x2 tile")
+	}
+	checkTiles(compact)
+
+	pmtiles := filepath.Join(root, "combined.pmtiles")
+	if _, err := ConvertArchive(ctx, compact, pmtiles, ArchiveConvertOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	fromPM := filepath.Join(root, "from-pm")
+	if _, err := ConvertArchive(ctx, pmtiles, fromPM, ArchiveConvertOptions{OutputKind: "compactv2"}); err != nil {
+		t.Fatal(err)
+	}
+	files := filepath.Join(root, "zyx-files")
+	if _, err := ConvertArchive(ctx, fromPM, files, ArchiveConvertOptions{OutputTilePath: "{z}/{y}/{x}.{format}"}); err != nil {
+		t.Fatal(err)
+	}
+	checkTiles(files)
+}

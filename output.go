@@ -121,6 +121,8 @@ func (task *Task) tileExists(ctx context.Context, tile maptile.Tile) (bool, erro
 	switch task.outformat {
 	case "s3":
 		return task.s3.exists(ctx, tile, task.TileMap.Format)
+	case "compactv2":
+		return task.compact.Exists(ctx, int(tile.Z), tile.X, tile.Y)
 	case "mbtiles":
 		var found int
 		err := task.db.QueryRowContext(ctx, "select 1 from tiles where zoom_level = ? and tile_column = ? and tile_row = ? and length(tile_data) > 0 limit 1", tile.Z, tile.X, (Tile{T: tile}).flipY()).Scan(&found)
