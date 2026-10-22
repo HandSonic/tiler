@@ -90,7 +90,7 @@ func TestFailureManifestRejectsFIFOWithoutBlocking(t *testing.T) {
 			t.Fatal(err)
 		}
 		writer.Close()
-		<-result
+		_ = awaitRegressionError(t, result)
 		t.Error("opening a FIFO failure report blocked waiting for a writer")
 	}
 }

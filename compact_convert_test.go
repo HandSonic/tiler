@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"image"
 	"image/color"
@@ -35,6 +36,8 @@ func TestCompactConvertRoundTripAndAppend(t *testing.T) {
 	// reversal and errors in selecting the bundle during a conversion.
 	archiveTestWrite(t, filepath.Join(regionA, "8", "127", "129.png"), red)
 	archiveTestWrite(t, filepath.Join(regionA, "8", "128", "130.png"), blue)
+	customJSON := `{"nested":true,"revision":9007199254740993}`
+	archiveTestWrite(t, filepath.Join(regionA, "metadata.json"), []byte(`{"json":{"json":`+customJSON+`,"custom_id":9007199254740993}}`))
 	mbtiles := filepath.Join(root, "region-a.mbtiles")
 	if _, err := ConvertArchive(ctx, regionA, mbtiles, ArchiveConvertOptions{}); err != nil {
 		t.Fatal(err)
@@ -120,4 +123,17 @@ func TestCompactConvertRoundTripAndAppend(t *testing.T) {
 		t.Fatal(err)
 	}
 	checkTiles(files)
+	// The reserved container name can also be a custom PMTiles JSON key.
+	// Preserve that key and integer precision through the complete roundtrip.
+	metadata, err := archiveReadDirectoryMetadata(files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var extensions map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(metadata["json"]), &extensions); err != nil {
+		t.Fatal(err)
+	}
+	if string(extensions["json"]) != customJSON || string(extensions["custom_id"]) != "9007199254740993" {
+		t.Fatalf("Compact roundtrip changed JSON extensions: %s", metadata["json"])
+	}
 }

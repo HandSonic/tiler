@@ -291,7 +291,7 @@ func TestAuditCLIRejectsNamedPipeMetadata(t *testing.T) {
 		}
 		_, _ = writer.Write([]byte(`{}`))
 		writer.Close()
-		<-done
+		_ = awaitRegressionError(t, done)
 		t.Fatal("CLI metadata reader blocks on a named pipe before cancellation is initialized")
 	}
 }

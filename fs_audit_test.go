@@ -40,7 +40,7 @@ func TestAuditConfigRejectsNamedPipe(t *testing.T) {
 		}
 		_, _ = writer.Write([]byte("[output]\nformat = 'file'\n"))
 		writer.Close()
-		<-done
+		_ = awaitRegressionError(t, done)
 		t.Fatal("configuration reader blocks on a named pipe")
 	}
 }
@@ -240,6 +240,23 @@ func TestAuditArchiveReplacementPreservesExistingMode(t *testing.T) {
 			}
 			if info.Mode().Perm() != 0640 {
 				t.Fatalf("conversion changed existing permissions: %o", info.Mode().Perm())
+			}
+			if tt.kind == "mbtiles" {
+				configureRegressionOutput(t)
+				viper.Set("output.format", "mbtiles")
+				viper.Set("output.directory", filepath.Dir(output))
+				viper.Set("output.name", "output")
+				redownload := newRegressionTask(t, "https://tiles.example/{z}/{x}/{y}")
+				if err := redownload.SetupMBTileTables(); err != nil {
+					t.Fatal(err)
+				}
+				if err := redownload.db.Close(); err != nil {
+					t.Fatal(err)
+				}
+				info, err := os.Stat(output)
+				if err != nil || info.Mode().Perm() != 0640 {
+					t.Fatalf("download recreation changed existing database permissions: info=%v err=%v", info, err)
+				}
 			}
 		})
 	}

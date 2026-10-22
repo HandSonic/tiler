@@ -379,7 +379,13 @@ func (task *Task) SetupMBTileTables() error {
 		if err := checkSQLiteSidecars(task.File); err != nil {
 			return err
 		}
-		if err := os.Remove(task.File); err != nil && !os.IsNotExist(err) {
+		if _, err := os.Lstat(task.File); err == nil {
+			// Recreate the database without resetting an existing file's
+			// access mode. New paths retain SQLite's normal creation policy.
+			if err := archiveWriteFileAtomic(task.File, nil); err != nil {
+				return fmt.Errorf("recreate MBTiles database: %w", err)
+			}
+		} else if !os.IsNotExist(err) {
 			return err
 		}
 	}
@@ -687,7 +693,7 @@ func (task *Task) Download() error {
 		}
 		task.s3.tilePath = task.tilePath
 		if task.resume {
-			if err := task.s3.validateResumeTarget(task.ctx); err != nil {
+			if err := task.s3.validateResumeTarget(task.ctx, task.TileMap.Format); err != nil {
 				return err
 			}
 		}
@@ -724,6 +730,9 @@ func (task *Task) Download() error {
 			metadata, err = compactReadMetadata(task.File)
 			if err != nil {
 				return fmt.Errorf("read original Compact v2 metadata: %w", err)
+			}
+			if !sameTileEncoding(strings.TrimSpace(metadata["format"]), strings.TrimSpace(task.TileMap.Format)) {
+				return fmt.Errorf("repair target tile format differs from the failure manifest")
 			}
 		}
 		var err error

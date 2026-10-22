@@ -151,7 +151,7 @@ func TestAuditArchiveDirectoryMetadataRejectsNullAndSpecialFiles(t *testing.T) {
 		}
 		writer.Write([]byte(`{}`))
 		writer.Close()
-		<-done
+		_ = awaitRegressionError(t, done)
 		t.Fatal("metadata reader blocked on an untrusted named pipe")
 	}
 }

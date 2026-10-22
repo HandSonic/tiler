@@ -381,6 +381,10 @@ func TestRepairS3RetriesFailedPutOrResolvesExistingObject(t *testing.T) {
 			badKey := "/test-bucket/basemap/1/1/1.png"
 			goodKey := "/test-bucket/basemap/1/0/0.png"
 			destination := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodGet && r.URL.Path == "/test-bucket/basemap/metadata.json" {
+					w.WriteHeader(http.StatusNotFound)
+					return
+				}
 				switch r.Method {
 				case http.MethodPut:
 					data, err := io.ReadAll(r.Body)

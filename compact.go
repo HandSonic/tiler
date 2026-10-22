@@ -533,6 +533,11 @@ func (cache *compactCache) writeMetadata() error {
 			return err
 		}
 	}
+	// The directory reader reserves json for the extension container. Keep
+	// an extension with that name inside it instead of flattening it away.
+	if value, exists := values["json"]; exists {
+		values["json"] = map[string]interface{}{"json": value}
+	}
 	for key, value := range cache.metadata {
 		if key != "json" {
 			values[key] = value

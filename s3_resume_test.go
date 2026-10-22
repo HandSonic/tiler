@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/paulmach/orb"
 	"github.com/spf13/viper"
 )
 
@@ -19,6 +20,7 @@ func TestS3ResumeChecksObjectsBeforeDownloading(t *testing.T) {
 	viper.Set("task.workers", 1)
 	body := tileDataPNG(t)
 	var downloads, uploads, checks int32
+	var metadataPresent atomic.Bool
 	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&downloads, 1)
 		w.Write(body)
@@ -27,6 +29,14 @@ func TestS3ResumeChecksObjectsBeforeDownloading(t *testing.T) {
 	destination := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/conf.xml") {
 			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/metadata.json") {
+			if !metadataPresent.Load() {
+				w.WriteHeader(http.StatusNotFound)
+			} else {
+				io.WriteString(w, `{"format":"png","tile_path":"{z}/{x}/{y}.{format}"}`)
+			}
 			return
 		}
 		switch r.Method {
@@ -57,6 +67,30 @@ func TestS3ResumeChecksObjectsBeforeDownloading(t *testing.T) {
 	}
 	if downloads != 1 || uploads != 1 || checks != 2 {
 		t.Fatalf("downloads/uploads/checks = %d/%d/%d", downloads, uploads, checks)
+	}
+	// A converted prefix can declare a layout before a download appends a
+	// disjoint region. Validate that declaration before checking new tiles.
+	metadataPresent.Store(true)
+	for _, changed := range []struct{ pattern, format, message string }{
+		{"{z}/{y}/{x}.{format}", PNG, "tile_path"},
+		{defaultTilePath, JPG, "tile format"},
+	} {
+		viper.Set("output.tile_path", changed.pattern)
+		task := taskForTest(source.URL, changed.format, orb.Collection{orb.Point{45, -45}})
+		err := task.Download()
+		if err == nil || !strings.Contains(err.Error(), changed.message) {
+			t.Fatalf("resume ignored declared prefix identity: %v", err)
+		}
+	}
+	if downloads != 1 || uploads != 1 || checks != 2 {
+		t.Fatal("mismatching prefix metadata reached tile checks, source downloads or PUT")
+	}
+	viper.Set("output.tile_path", defaultTilePath)
+	if err := newRegressionTask(t, source.URL).Download(); err != nil {
+		t.Fatalf("matching prefix metadata prevented resume: %v", err)
+	}
+	if downloads != 1 || uploads != 1 || checks != 3 {
+		t.Fatal("matching prefix metadata did not preserve the existing tile")
 	}
 }
 

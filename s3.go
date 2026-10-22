@@ -101,15 +101,44 @@ func newS3OutputForBucket(ctx context.Context, bucket string) (*s3Output, error)
 	}, nil
 }
 
-// Resume already needs read access. Check the cache marker once so loose
-// tiles cannot be appended beside bundles that readers will select instead.
-func (out *s3Output) validateResumeTarget(ctx context.Context) error {
+// Resume already needs read access. Check the cache marker and declared
+// prefix identity once so a disjoint region cannot mix layouts or formats.
+func (out *s3Output) validateResumeTarget(ctx context.Context, format string) error {
 	_, compact, err := archiveS3Head(ctx, out, archiveS3Key(out.prefix, "conf.xml"))
 	if err != nil {
 		return err
 	}
 	if compact {
 		return fmt.Errorf("S3 target is a Compact cache; append with convert -output-type compactv2 or use a different prefix for loose tiles")
+	}
+	metadata, present, err := archiveS3Metadata(ctx, out, out.prefix)
+	if err != nil || !present {
+		return err
+	}
+	previousPath, err := normalizeTilePath(metadata["tile_path"])
+	if err != nil {
+		return fmt.Errorf("invalid existing S3 tile path: %w", err)
+	}
+	currentPath, err := normalizeTilePath(out.tilePath)
+	if err != nil {
+		return err
+	}
+	if previousPath != currentPath {
+		return fmt.Errorf("existing S3 metadata uses a different tile_path; keep the original template or choose a new prefix")
+	}
+	previousFormat := strings.ToLower(strings.TrimSpace(metadata["format"]))
+	if previousFormat != "" {
+		if _, err := archiveFormat(previousFormat); err != nil {
+			return fmt.Errorf("invalid existing S3 tile format: %w", err)
+		}
+		matches := sameTileEncoding(previousFormat, strings.TrimSpace(format))
+		if strings.Contains(currentPath, "{format}") {
+			// Even encoding aliases such as jpg/jpeg change object keys.
+			matches = strings.EqualFold(previousFormat, strings.TrimSpace(format))
+		}
+		if !matches {
+			return fmt.Errorf("existing S3 metadata uses a different tile format; keep the original format or choose a new prefix")
+		}
 	}
 	return nil
 }

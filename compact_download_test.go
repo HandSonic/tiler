@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -199,12 +200,48 @@ func TestCompactDownloadCancelRepairResumeAppend(t *testing.T) {
 		t.Fatalf("bundle count = %d, want 3", bundles)
 	}
 
-	// Changing output mode must not mix loose tiles into an existing cache,
-	// even if a separate failure report avoids the old target-kind check.
+	// Rejected repair/output changes must leave the original cache intact.
 	originalMetadata, err := os.ReadFile(filepath.Join(first.File, "metadata.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
+	// A stale report must not resolve coordinates from a cache whose image
+	// encoding no longer matches the original download.
+	wrongFormat := newFailureManifest(tileMap.Name, JPG)
+	if err := wrongFormat.SetTarget(FailureTarget{Kind: "compactv2", Path: first.File}); err != nil {
+		t.Fatal(err)
+	}
+	if err := wrongFormat.Record(coordinates[0], template, errors.New("stale JPEG failure")); err != nil {
+		t.Fatal(err)
+	}
+	wrongPath := filepath.Join(filepath.Dir(first.File), "wrong-format-failures.json")
+	if err := wrongFormat.Save(wrongPath); err != nil {
+		t.Fatal(err)
+	}
+	originalReport, err := os.ReadFile(wrongPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrongMap := tileMap
+	wrongMap.Format = JPG
+	mismatched, err := NewRepairTask(layers(coordinates[0]), wrongMap, wrongFormat, wrongPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(mismatched.Cancel)
+	if err := mismatched.Download(); err == nil || !strings.Contains(err.Error(), "tile format differs") {
+		t.Fatalf("repair accepted a cache with a different encoding: %v", err)
+	}
+	unchangedReport, err := os.ReadFile(wrongPath)
+	if err != nil || !bytes.Equal(unchangedReport, originalReport) || wrongFormat.Len() != 1 || requests.Load() != 4 {
+		t.Fatalf("rejected repair modified its report or requested tiles: %v", err)
+	}
+	unchangedMetadata, err := os.ReadFile(filepath.Join(first.File, "metadata.json"))
+	if err != nil || !bytes.Equal(unchangedMetadata, originalMetadata) {
+		t.Fatalf("rejected repair modified cache metadata: %v", err)
+	}
+	// Changing output mode must not mix loose tiles into an existing cache,
+	// even if a separate failure report avoids the old target-kind check.
 	viper.Set("output.format", "file")
 	viper.Set("output.append", false)
 	viper.Set("output.resume", false)
