@@ -132,7 +132,6 @@ func archiveWalkPM(ctx context.Context, input string, visit archiveVisit) (map[s
 	var hasPrevious bool
 	var addressed uint64
 	const directoryMemoryLimit uint64 = 64 << 20
-	const directoryEntryLimit uint64 = 1 << 20
 	var liveDirectoryBytes, liveDirectoryEntries uint64
 	active := map[uint64]bool{}
 	var walkDirectory func(offset, length uint64, depth int, minimum, maximum uint64, requireFirst bool) error
@@ -149,7 +148,7 @@ func archiveWalkPM(ctx context.Context, input string, visit archiveVisit) (map[s
 		if err != nil {
 			return err
 		}
-		entries, memory, err := archiveReadPMDirectory(data, header.InternalCompression, directoryMemoryLimit-liveDirectoryBytes, directoryEntryLimit-liveDirectoryEntries)
+		entries, memory, err := archiveReadPMDirectory(data, header.InternalCompression, directoryMemoryLimit-liveDirectoryBytes, pmDirectoryEntryLimit-liveDirectoryEntries)
 		if err != nil {
 			return err
 		}

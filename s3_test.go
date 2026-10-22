@@ -85,10 +85,16 @@ func TestS3Save(t *testing.T) {
 			requests := make(chan requestData, 1)
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				body, err := io.ReadAll(r.Body)
-				requests <- requestData{
+				select {
+				case requests <- requestData{
 					method: r.Method, path: r.URL.Path,
 					contentType: r.Header.Get("Content-Type"), encoding: r.Header.Get("Content-Encoding"),
 					authorization: r.Header.Get("Authorization"), token: r.Header.Get("X-Amz-Security-Token"), body: body, err: err,
+				}:
+				default:
+					t.Errorf("unexpected extra S3 request: %s %s", r.Method, r.URL.Path)
+					w.WriteHeader(http.StatusBadRequest)
+					return
 				}
 				w.Header().Set("ETag", `"test-etag"`)
 				w.WriteHeader(http.StatusOK)

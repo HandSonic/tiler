@@ -125,21 +125,49 @@ func TestCompactEmptyResumeAndCorruptIndex(t *testing.T) {
 	if decoded["revision"] != float64(7) || decoded["pixel_scale"] != "512" {
 		t.Fatalf("typed metadata or actual image size lost: %s", data)
 	}
-	// At z30 an absolute 5e-10 resolution error accumulates across the global
-	// grid. Such a cache must not be imported as standard XYZ.
 	config, _, err := compactReadConfig(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	config.Cache.LODs[30].Resolution += 5e-10
-	conf, err := xml.Marshal(config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "conf.xml"), conf, 0644); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := compactReadConfig(root); err == nil {
-		t.Fatal("accepted a high-zoom grid with a displaced resolution")
+	for _, test := range []struct {
+		name   string
+		change func(*compactXML)
+		valid  bool
+	}{
+		{"rounded Esri grid", func(config *compactXML) {
+			// Official sample_cache/conf.xml uses rounded decimal values, not
+			// exact binary equality with pi * 6378137. Keep that cache readable.
+			// https://github.com/Esri/raster-tiles-compactcache/blob/master/sample_cache/conf.xml
+			config.Cache.Origin.X, config.Cache.Origin.Y = -20037508.342787001, 20037508.342787001
+			config.Cache.Width, config.Cache.Height = 256, 256
+			config.Cache.LODs = config.Cache.LODs[:20]
+			for i := range config.Cache.LODs {
+				config.Cache.LODs[i].Resolution *= 2 // the original cache uses 512 pixels
+			}
+			config.Cache.LODs[0].Resolution = 156543.03392800014
+			config.Cache.LODs[19].Resolution = 0.29858214164761665
+		}, true},
+		{"displaced origin", func(config *compactXML) {
+			config.Cache.Origin.X += 0.01 // centimetres become many pixels at z30
+		}, false},
+		{"accumulated resolution error", func(config *compactXML) {
+			config.Cache.LODs[30].Resolution *= 1 + 5e-10
+		}, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			changed := config
+			changed.Cache.LODs = append([]compactLOD(nil), config.Cache.LODs...)
+			test.change(&changed)
+			conf, err := xml.Marshal(changed)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(root, "conf.xml"), conf, 0644); err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := compactReadConfig(root); (err == nil) != test.valid {
+				t.Fatalf("grid valid=%v, want %v: %v", err == nil, test.valid, err)
+			}
+		})
 	}
 }

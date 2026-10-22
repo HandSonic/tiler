@@ -370,6 +370,18 @@ func TestArchivePMTilesZoomLimitPreservesMBTilesZoom30(t *testing.T) {
 }
 
 func TestArchivePMTilesUsesLeafDirectory(t *testing.T) {
+	// Exercise global-scale sizing without allocating or generating the tiles.
+	maxTiles := int64(maxPMRootEntries) * int64(pmDirectoryEntryLimit-maxPMRootEntries)
+	for _, count := range []int64{357913941, maxTiles} { // world z0..14 and the live-entry boundary
+		if _, err := archivePMLeafSize(count); err != nil {
+			t.Fatalf("PMTiles sizing rejected %d tiles: %v", count, err)
+		}
+	}
+	for _, count := range []int64{maxTiles + 1, 1431655765} { // boundary + 1 and world z0..15
+		if _, err := archivePMLeafSize(count); err == nil {
+			t.Fatalf("PMTiles sizing accepted %d tiles beyond its reader's directory capacity", count)
+		}
+	}
 	input := filepath.Join(t.TempDir(), "source.mbtiles")
 	db, err := archiveOpenSQLite(input, false)
 	if err != nil {

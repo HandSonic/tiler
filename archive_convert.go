@@ -454,6 +454,25 @@ func archiveNumbers(text string, count int) ([]float64, error) {
 	return result, nil
 }
 
+// archivePMLeafSize sizes the writer's directory for a nonempty tile set.
+func archivePMLeafSize(count int64) (int, error) {
+	leafSize := (count-1)/maxPMRootEntries + 1
+	if leafSize < minPMLeafEntries {
+		leafSize = minPMLeafEntries
+	}
+	// Readers retain the root while visiting a leaf. This writer uses one
+	// entry per tile, even when gzip makes the directory very small.
+	maxLeafSize := int64(pmDirectoryEntryLimit) - maxPMRootEntries
+	if leafSize > maxLeafSize {
+		return 0, fmt.Errorf("PMTiles output exceeds this build's %d-tile directory capacity; split the output or use Compact v2", maxLeafSize*maxPMRootEntries)
+	}
+	// These <=1M entries also fit the reader's 64 MiB memory budget on both
+	// architectures: 24 bytes per entry, <=14 varint bytes per tile (z<=26,
+	// run=1, <=64 MiB tile, contiguous offsets), plus count/first-offset
+	// framing, the compressed copy and the small root directory.
+	return int(leafSize), nil
+}
+
 // archiveWritePMTiles exports convertLocalArchive's private, closed staging
 // database. Its tiles have already been validated and converted to the declared
 // format, including one gzip layer for PBF, so write those bytes unchanged.
@@ -533,6 +552,10 @@ func archiveWritePMTiles(ctx context.Context, input, output, work string) (resul
 	if extent.count == 0 {
 		return result, fmt.Errorf("MBTiles archive contains no tiles")
 	}
+	leafSize, err := archivePMLeafSize(extent.count)
+	if err != nil {
+		return result, err
+	}
 	if err = tx.Commit(); err != nil {
 		return result, err
 	}
@@ -554,14 +577,6 @@ func archiveWritePMTiles(ctx context.Context, input, output, work string) (resul
 		return result, err
 	}
 	defer leafFile.Close()
-	leafSize64 := (extent.count + maxPMRootEntries - 1) / maxPMRootEntries
-	if leafSize64 < minPMLeafEntries {
-		leafSize64 = minPMLeafEntries
-	}
-	if leafSize64 > int64(int(^uint(0)>>1))/int64(pmEntryMemoryBytes) {
-		return result, fmt.Errorf("archive directory is too large for this build architecture")
-	}
-	leafSize := int(leafSize64)
 	useLeaves := extent.count > maxPMRootEntries
 	entries := make([]pm.EntryV3, 0, leafSize)
 	rootEntries := make([]pm.EntryV3, 0, maxPMRootEntries)

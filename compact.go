@@ -152,11 +152,16 @@ func compactReadConfig(root string) (compactXML, string, error) {
 	if len(config.Cache.LODs) == 0 || len(config.Cache.LODs) > 31 {
 		return config, "", fmt.Errorf("Compact v2 must define zoom levels from 0 through at most 30")
 	}
+	originError := math.Max(math.Abs(config.Cache.Origin.X+compactMercatorEdge), math.Abs(config.Cache.Origin.Y-compactMercatorEdge))
 	for z, lod := range config.Cache.LODs {
-		expected := 2 * compactMercatorEdge / (float64(config.Cache.Width) * math.Exp2(float64(z)))
-		// Keep resolution tolerance relative even at high zooms: a small
-		// absolute error accumulates across the global tile columns and rows.
-		matchesResolution := math.Abs(lod.Resolution-expected) <= math.Abs(expected)*1e-9
+		pixelsAcrossWorld := float64(config.Cache.Width) * math.Exp2(float64(z))
+		expected := 2 * compactMercatorEdge / pixelsAcrossWorld
+		resolutionError := math.Abs(lod.Resolution - expected)
+		// Allow rounded Esri metadata, but require the combined origin and
+		// accumulated resolution error to stay within half an output pixel.
+		// Relative tolerance alone can admit whole-tile shifts at high zooms.
+		gridError := originError + resolutionError*pixelsAcrossWorld
+		matchesResolution := resolutionError <= expected*1e-9 && gridError <= expected/2
 		if lod.Level != z || !matchesResolution {
 			return config, "", fmt.Errorf("Compact v2 LOD resolutions must match global XYZ zoom levels starting at 0")
 		}

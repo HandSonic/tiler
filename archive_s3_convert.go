@@ -95,6 +95,17 @@ func ConvertArchive(ctx context.Context, input, output string, opts ArchiveConve
 				}
 			}
 		}
+		if destinationRemote && source.bucket == destination.bucket {
+			// Directory prefixes have the same overlap restriction as local
+			// directories. In particular, nested Compact output would leave
+			// bundles that make the original cache unreadable on its next scan.
+			if source.kind == "file" && strings.HasPrefix(destination.key, archiveS3Key(source.key, "")) {
+				return zero, fmt.Errorf("S3 input and output prefixes overlap: output cannot be inside the input prefix")
+			}
+			if (destination.kind == "file" || destination.kind == "compactv2") && strings.HasPrefix(source.key, archiveS3Key(destination.key, "")) {
+				return zero, fmt.Errorf("S3 input and output prefixes overlap: output prefix cannot contain the input")
+			}
+		}
 		if source.kind == "file" {
 			_, compact, err := archiveS3Head(ctx, out, archiveS3Key(source.key, "conf.xml"))
 			if err != nil {

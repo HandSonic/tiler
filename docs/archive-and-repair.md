@@ -15,6 +15,8 @@
 
 支持归档互转、归档导出散瓦片，以及散瓦片构建归档。Compact v2 的 PNG/JPEG、256/512 像素限制、转换/上传语义和 MapProxy 配置见 [Compact v2 说明](compact-v2.md)。PMTiles 输入支持 v3 的 PNG/JPEG/WebP/MVT，支持无压缩和 gzip；Brotli、Zstd、AVIF 会明确报错。MBTiles 支持 z0–30；PMTiles 支持 z0–26，与官方 Web reader 的坐标范围一致。转换正确处理 MBTiles 的 TMS 行号和 PMTiles 的内部索引，不改变瓦片覆盖范围，也不会镶嵌大图或裁剪边缘图像。
 
+当前 PMTiles 写出器单档最多支持 536,608,768 张瓦片，来自最多 512 个根目录条目与读取时同时存活的 1,048,576 个目录条目预算，不是 PMTiles 格式上限。全球 z0–14 共 357,913,941 张在此数量范围内，z0–15 共 1,431,655,765 张会超限并明确报错。更大任务应拆分归档或使用 Compact v2；此数量限制不代表磁盘容量或 Win7 内存足够运行。
+
 ```sh
 # 本地目录、MBTiles、PMTiles 互转
 ./tiler convert -input output/tiles -output maps/basemap.mbtiles

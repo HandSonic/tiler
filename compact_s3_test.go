@@ -53,8 +53,13 @@ func TestCompactS3RoundTripAppendAndUpload(t *testing.T) {
 	if result, err := ConvertArchive(ctx, regionB, destination, ArchiveConvertOptions{S3: out, OutputKind: "compactv2", Append: true}); err != nil || result.Tiles != 3 {
 		t.Fatalf("S3 Compact append: result=%+v err=%v", result, err)
 	}
+	// A sibling whose name starts with the source name is not nested in it.
+	const sibling = "s3://destination/cached/"
+	if _, err := ConvertArchive(ctx, destination, sibling, ArchiveConvertOptions{S3: out, OutputKind: "compactv2"}); err != nil {
+		t.Fatal(err)
+	}
 	local := filepath.Join(root, "compact")
-	if _, err := ConvertArchive(ctx, destination, local, ArchiveConvertOptions{S3: out, OutputKind: "compactv2"}); err != nil {
+	if _, err := ConvertArchive(ctx, sibling, local, ArchiveConvertOptions{S3: out, OutputKind: "compactv2"}); err != nil {
 		t.Fatal(err)
 	}
 	if got := archiveV2Snapshot(t, local, ""); len(got) != 3 || !bytes.Equal(got["8/127/129"], red) || !bytes.Equal(got["8/128/130"], blue) || !bytes.Equal(got["8/129/131"], green) {
@@ -77,6 +82,11 @@ func TestCompactS3RoundTripAppendAndUpload(t *testing.T) {
 	}
 
 	puts := store.count("PUT")
+	for _, overlapping := range []string{"s3://destination/cache/copy/", "s3://destination/"} {
+		if _, err := ConvertArchive(ctx, destination, overlapping, ArchiveConvertOptions{S3: out, OutputKind: "compactv2", Append: true}); err == nil || !strings.Contains(err.Error(), "overlap") {
+			t.Fatalf("overlapping S3 cache prefixes must be rejected: %s: %v", overlapping, err)
+		}
+	}
 	if _, err := ConvertArchive(ctx, regionB, destination, ArchiveConvertOptions{S3: out, OutputKind: "compactv2", Overwrite: true}); err == nil || !strings.Contains(err.Error(), "new prefix") {
 		t.Fatalf("existing Compact S3 overwrite must be rejected: %v", err)
 	}

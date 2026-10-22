@@ -14,6 +14,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/paulmach/orb"
 	"github.com/spf13/viper"
@@ -66,7 +67,13 @@ func TestTaskDownloadS3(t *testing.T) {
 			var completed int32
 			sink := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				data, err := io.ReadAll(r.Body)
-				uploads <- upload{r.URL.Path, r.Header.Get("Content-Type"), r.Header.Get("Content-Encoding"), data, err}
+				select {
+				case uploads <- upload{r.URL.Path, r.Header.Get("Content-Type"), r.Header.Get("Content-Encoding"), data, err}:
+				default:
+					t.Errorf("unexpected extra S3 upload: %s", r.URL.Path)
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
 				entered <- struct{}{}
 				<-release
 				atomic.AddInt32(&completed, 1)
@@ -76,6 +83,7 @@ func TestTaskDownloadS3(t *testing.T) {
 			defer releaseAll()
 			viper.Set("output.s3.endpoint", sink.URL)
 			task := taskForTest(source.URL, format, orb.Collection{orb.Point{-135, 45}, orb.Point{45, -45}})
+			defer task.Cancel()
 			result := make(chan error, 1)
 			go func() { result <- task.Download() }()
 			for i := 0; i < 2; i++ {
@@ -83,6 +91,8 @@ func TestTaskDownloadS3(t *testing.T) {
 				case <-entered:
 				case err := <-result:
 					t.Fatalf("Download returned before both uploads started: %v", err)
+				case <-time.After(3 * time.Second):
+					t.Fatal("both S3 uploads did not start")
 				}
 			}
 			select {
@@ -91,7 +101,7 @@ func TestTaskDownloadS3(t *testing.T) {
 			default:
 			}
 			releaseAll()
-			if err := <-result; err != nil {
+			if err := awaitRegressionError(t, result); err != nil {
 				t.Fatal(err)
 			}
 			if got := atomic.LoadInt32(&completed); got != 2 {
