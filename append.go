@@ -321,11 +321,8 @@ func decodeDownloadVectorMetadata(metadata map[string]string) (map[string]interf
 		}
 	}
 	if text := strings.TrimSpace(metadata["vector_layers"]); text != "" {
-		var direct interface{}
-		if err := json.Unmarshal([]byte(text), &direct); err != nil {
-			return nil, fmt.Errorf("vector_layers must be a JSON array")
-		}
-		if direct == nil {
+		direct, err := decodeVectorLayers([]byte(text))
+		if err != nil {
 			return nil, fmt.Errorf("vector_layers must be a JSON array")
 		}
 		layers, err := mergeDownloadVectorLayers(result["vector_layers"], direct)
@@ -446,14 +443,6 @@ func mergeDownloadVectorLayers(previous, current interface{}) ([]interface{}, er
 			if err := mergeVectorLayer(old, layer); err != nil {
 				return nil, err
 			}
-			for key, value := range layer {
-				if key == "fields" || key == "minzoom" || key == "maxzoom" {
-					continue
-				}
-				if _, exists := old[key]; !exists {
-					old[key] = value
-				}
-			}
 		}
 	}
 	return result, nil
@@ -478,6 +467,14 @@ func mergeVectorLayer(previous, current map[string]interface{}) error {
 			previous[key] = math.Min(a, b)
 		} else {
 			previous[key] = math.Max(a, b)
+		}
+	}
+	for key, value := range current {
+		if key == "fields" || key == "minzoom" || key == "maxzoom" {
+			continue
+		}
+		if _, exists := previous[key]; !exists {
+			previous[key] = value
 		}
 	}
 	return nil

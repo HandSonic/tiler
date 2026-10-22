@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -152,6 +153,21 @@ func TestUploadArchivesPreflightRejectsAllBeforeNetwork(t *testing.T) {
 			}
 		})
 	}
+	t.Run("converted archive size", func(t *testing.T) {
+		var requests atomic.Int32
+		out := archiveUploadTestOutput(t, func(w http.ResponseWriter, r *http.Request) { requests.Add(1) })
+		plan, err := planArchiveUploads(context.Background(), out.prefix, []string{first})
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Converted archives use the shared uploader without UploadArchives preflight.
+		// Supply oversized metadata without creating or transferring a huge file.
+		plan[0].Size = math.MaxInt64
+		err = uploadArchiveFile(context.Background(), out, manager.NewUploader(out.client), plan[0], time.Minute)
+		if err == nil || !strings.Contains(err.Error(), "too large for multipart uploads") || requests.Load() != 0 {
+			t.Fatalf("oversized converted archive: error=%v requests=%d", err, requests.Load())
+		}
+	})
 }
 
 func TestUploadArchivesRejectsSymlink(t *testing.T) {

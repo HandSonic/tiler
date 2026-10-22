@@ -504,7 +504,7 @@ func TestArchiveV2VectorRoundTripAndMetadataMerge(t *testing.T) {
 	raw := []byte{0x1a, 0x0b, 0x0a, 0x04, 't', 'e', 's', 't', 0x28, 0x80, 0x20, 0x78, 0x02}
 	input := t.TempDir()
 	archiveTestWrite(t, filepath.Join(input, "0", "0", "0.pbf"), raw)
-	archiveTestWrite(t, filepath.Join(input, "metadata.json"), []byte(`{"vector_layers":[{"id":"test","fields":{}}]}`))
+	archiveTestWrite(t, filepath.Join(input, "metadata.json"), []byte(`{"vector_layers":[{"id":"test","fields":{},"custom_id":9007199254740993}]}`))
 	pmtiles := filepath.Join(t.TempDir(), "vector.pmtiles")
 	if _, err := convertLocalArchive(context.Background(), input, pmtiles, ArchiveConvertOptions{}); err != nil {
 		t.Fatal(err)
@@ -522,9 +522,12 @@ func TestArchiveV2VectorRoundTripAndMetadataMerge(t *testing.T) {
 	if err != nil || json.Unmarshal([]byte(directoryMetadata["json"]), &original) != nil || len(original["vector_layers"]) == 0 {
 		t.Fatalf("custom JSON override erased the original PBF schema: %v, %v", directoryMetadata, err)
 	}
+	if !strings.Contains(string(original["vector_layers"]), `"custom_id":9007199254740993`) {
+		t.Fatalf("vector layer integer changed during PMTiles/file round trip: %s", original["vector_layers"])
+	}
 	rearchive := filepath.Join(t.TempDir(), "vector-again.pmtiles")
 	flatLayers := `[{"id":"test","fields":{"flat":"String"}}]`
-	jsonLayers := `[{"id":"test","fields":{"explicit":"Number"}}]`
+	jsonLayers := `[{"id":"test","fields":{"explicit":"Number"},"custom_id":9007199254740993}]`
 	if _, err := convertLocalArchive(context.Background(), output, rearchive, ArchiveConvertOptions{Metadata: map[string]string{"json": `{"vector_layers":` + jsonLayers + `}`, "vector_layers": flatLayers}}); err != nil {
 		t.Fatal(err)
 	}
@@ -548,8 +551,11 @@ func TestArchiveV2VectorRoundTripAndMetadataMerge(t *testing.T) {
 	if fields["explicit"] != "Number" || len(fields) != 1 {
 		t.Fatalf("source flat schema overrode explicit JSON schema: %v", tileJSON)
 	}
-	a := map[string]string{"format": "pbf", "json": `{"vector_layers":[{"id":"roads","fields":{"name":"String"},"minzoom":5,"maxzoom":8}]}`}
-	b := map[string]string{"format": "pbf", "vector_layers": `[{"id":"roads","fields":{"class":"String"},"minzoom":2,"maxzoom":10},{"id":"water","fields":{}}]`}
+	if !strings.Contains(metadata["json"], `"custom_id":9007199254740993`) {
+		t.Fatalf("vector layer integer changed during MBTiles normalization: %s", metadata["json"])
+	}
+	a := map[string]string{"format": "pbf", "json": `{"vector_layers":[{"id":"roads","fields":{"name":"String"},"minzoom":5,"maxzoom":8,"custom_id":9007199254740993}]}`}
+	b := map[string]string{"format": "pbf", "vector_layers": `[{"id":"roads","fields":{"class":"String"},"minzoom":2,"maxzoom":10,"custom_id":7,"description":"new description","custom_added":{"id":9007199254740993}},{"id":"water","fields":{}}]`}
 	merged, err := archiveMergeMetadata(a, b)
 	if err != nil {
 		t.Fatal(err)
@@ -560,6 +566,9 @@ func TestArchiveV2VectorRoundTripAndMetadataMerge(t *testing.T) {
 	}
 	if len(layers) != 2 || layers[0]["minzoom"] != float64(2) || layers[0]["maxzoom"] != float64(10) || len(layers[0]["fields"].(map[string]interface{})) != 2 {
 		t.Fatalf("layers=%v", layers)
+	}
+	if layers[0]["description"] != "new description" || !strings.Contains(merged["vector_layers"], `"custom_id":9007199254740993`) || !strings.Contains(merged["vector_layers"], `"custom_added":{"id":9007199254740993}`) {
+		t.Fatalf("append changed existing or dropped new layer extensions: %s", merged["vector_layers"])
 	}
 	b["vector_layers"] = `[{"id":"roads","fields":{"name":"Number"}}]`
 	if _, err := archiveMergeMetadata(a, b); err == nil || !strings.Contains(err.Error(), "conflicting") {

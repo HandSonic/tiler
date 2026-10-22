@@ -9,6 +9,24 @@ permissions:
   contents: read
 
 jobs:
+  test-windows:
+    # Run Windows-specific code; this is not a Windows 7 runtime test.
+    runs-on: windows-2022
+    env:
+      CGO_ENABLED: '1'
+      CC: C:/mingw64/bin/gcc.exe
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.20.14'
+          check-latest: false
+      - name: Test on Windows with SQLite
+        shell: pwsh
+        run: |
+          # The runner image includes MinGW; expose its runtime DLLs as well.
+          $env:PATH = "C:\mingw64\bin;$env:PATH"
+          go test ./...
   test-and-cross-build:
     runs-on: ubuntu-24.04
     steps:

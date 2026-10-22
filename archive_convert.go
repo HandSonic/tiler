@@ -263,8 +263,8 @@ func archiveNormalizeMBVectorMetadata(metadata map[string]string, minZoom, maxZo
 		object = parsed
 	}
 	if value := strings.TrimSpace(metadata["vector_layers"]); value != "" {
-		var layers interface{}
-		if err := json.Unmarshal([]byte(value), &layers); err != nil {
+		layers, err := decodeVectorLayers([]byte(value))
+		if err != nil {
 			return fmt.Errorf("invalid vector_layers metadata: %w", err)
 		}
 		object["vector_layers"] = layers
@@ -291,8 +291,8 @@ func decodeTileJSONMetadata(text string) (map[string]interface{}, error) {
 	object := make(map[string]interface{}, len(raw))
 	for key, value := range raw {
 		if key == "vector_layers" {
-			var layers interface{}
-			if err := json.Unmarshal(value, &layers); err != nil {
+			layers, err := decodeVectorLayers(value)
+			if err != nil {
 				return nil, err
 			}
 			object[key] = layers
@@ -301,6 +301,39 @@ func decodeTileJSONMetadata(text string) (map[string]interface{}, error) {
 		}
 	}
 	return object, nil
+}
+
+// Only schema fields need typed values for validation and merging. Preserve
+// layer extensions as raw JSON, including integers too large for float64.
+func decodeVectorLayers(data []byte) ([]interface{}, error) {
+	var raw []map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, err
+	}
+	if raw == nil {
+		return nil, fmt.Errorf("vector_layers must be a JSON array")
+	}
+	layers := make([]interface{}, len(raw))
+	for i, fields := range raw {
+		if fields == nil {
+			return nil, fmt.Errorf("vector_layers[%d] must be an object", i)
+		}
+		layer := make(map[string]interface{}, len(fields))
+		for key, value := range fields {
+			switch key {
+			case "id", "fields", "minzoom", "maxzoom":
+				var parsed interface{}
+				if err := json.Unmarshal(value, &parsed); err != nil {
+					return nil, err
+				}
+				layer[key] = parsed
+			default:
+				layer[key] = value
+			}
+		}
+		layers[i] = layer
+	}
+	return layers, nil
 }
 
 // MBTiles 1.3 restricts field types and layer zooms more tightly than the
@@ -664,8 +697,8 @@ func archiveWritePMTiles(ctx context.Context, input, output, work string) (resul
 	jsonMetadata["format"] = targetFormat
 	// Some MBTiles producers store vector_layers directly as serialized JSON.
 	if value, ok := jsonMetadata["vector_layers"].(string); ok {
-		var parsed interface{}
-		if err = json.Unmarshal([]byte(value), &parsed); err != nil {
+		var parsed []interface{}
+		if parsed, err = decodeVectorLayers([]byte(value)); err != nil {
 			return result, fmt.Errorf("invalid vector_layers metadata: %w", err)
 		}
 		jsonMetadata["vector_layers"] = parsed

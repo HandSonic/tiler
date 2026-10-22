@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf16"
 
 	_ "github.com/mattn/go-sqlite3"
 	pm "tiler/internal/pmtiles"
@@ -331,26 +332,36 @@ func TestArchiveSQLiteURIWindowsAndUnixPaths(t *testing.T) {
 }
 
 func TestArchivePublishNoReplaceRefusesExistingDestination(t *testing.T) {
-	dir := t.TempDir()
-	from, to := filepath.Join(dir, "complete.tmp"), filepath.Join(dir, "output.pmtiles")
-	archiveTestWrite(t, from, []byte("new"))
-	archiveTestWrite(t, to, []byte("existing"))
-	if err := archivePublishNoReplace(from, to); err == nil {
-		t.Fatal("existing destination replaced")
-	}
-	body, err := os.ReadFile(to)
-	if err != nil || string(body) != "existing" {
-		t.Fatalf("existing destination changed: %q %v", body, err)
-	}
-	if err := os.Remove(to); err != nil {
-		t.Fatal(err)
-	}
-	if err := archivePublishNoReplace(from, to); err != nil {
-		t.Fatal(err)
-	}
-	body, err = os.ReadFile(to)
-	if err != nil || string(body) != "new" {
-		t.Fatalf("complete file not published: %q %v", body, err)
+	for _, name := range []string{"ordinary", "long"} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			if name == "long" {
+				// Exceed Windows MAX_PATH (260), keeping each component below 255.
+				for len(utf16.Encode([]rune(dir))) <= 260 {
+					dir = filepath.Join(dir, "long-archive-output-directory")
+				}
+			}
+			from, to := filepath.Join(dir, "complete.tmp"), filepath.Join(dir, "output.pmtiles")
+			archiveTestWrite(t, from, []byte("new"))
+			archiveTestWrite(t, to, []byte("existing"))
+			if err := archivePublishNoReplace(from, to); err == nil {
+				t.Fatal("existing destination replaced")
+			}
+			body, err := os.ReadFile(to)
+			if err != nil || string(body) != "existing" {
+				t.Fatalf("existing destination changed: %q %v", body, err)
+			}
+			if err := os.Remove(to); err != nil {
+				t.Fatal(err)
+			}
+			if err := archivePublishNoReplace(from, to); err != nil {
+				t.Fatal(err)
+			}
+			body, err = os.ReadFile(to)
+			if err != nil || string(body) != "new" {
+				t.Fatalf("complete file not published: %q %v", body, err)
+			}
+		})
 	}
 }
 

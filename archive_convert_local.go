@@ -940,11 +940,10 @@ func archiveMergeMetadata(existing, incoming map[string]string) (map[string]stri
 	for index, metadata := range []map[string]string{existing, incoming} {
 		object := map[string]interface{}{}
 		if metadata["json"] != "" {
-			if err := json.Unmarshal([]byte(metadata["json"]), &object); err != nil {
+			var err error
+			object, err = decodeTileJSONMetadata(metadata["json"])
+			if err != nil {
 				return nil, fmt.Errorf("invalid JSON metadata: %w", err)
-			}
-			if object == nil {
-				return nil, fmt.Errorf("metadata json must be an object")
 			}
 		}
 		if index == 0 {
@@ -956,8 +955,8 @@ func archiveMergeMetadata(existing, incoming map[string]string) (map[string]stri
 			}
 		}
 		if text := metadata["vector_layers"]; text != "" {
-			var value interface{}
-			if err := json.Unmarshal([]byte(text), &value); err != nil {
+			value, err := decodeVectorLayers([]byte(text))
+			if err != nil {
 				return nil, err
 			}
 			object["vector_layers"] = value

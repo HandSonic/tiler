@@ -23,6 +23,8 @@ const defaultArchivePartSize = 8 << 20
 const defaultArchiveConcurrency = 3
 const maxArchiveConcurrency = 32
 
+const maxS3UploadPartSize int64 = 5 << 30
+
 // ArchiveUploadOptions controls each archive upload. Zero values select a
 // one-hour deadline, 8 MiB initial parts, and three concurrent part requests.
 // The SDK increases the part size for large seekable files when necessary.
@@ -82,7 +84,7 @@ func UploadArchives(ctx context.Context, out *s3Output, inputs []string, opts Ar
 	if opts.PartSize == 0 {
 		opts.PartSize = defaultArchivePartSize
 	}
-	maxPartSize := int64(5) * 1024 * 1024 * 1024
+	maxPartSize := maxS3UploadPartSize
 	maxInt := int64(^uint(0) >> 1)
 	if maxInt < maxPartSize {
 		maxPartSize = maxInt
@@ -108,10 +110,8 @@ func UploadArchives(ctx context.Context, out *s3Output, inputs []string, opts Ar
 		})
 	}
 	for _, file := range files {
-		// The SDK uses int for each part's length. Reject an auto-grown part
-		// that would overflow a 32-bit Windows build before starting uploads.
-		if file.Size/int64(manager.MaxUploadParts)+1 > maxPartSize {
-			return result, fmt.Errorf("archive %s is too large for multipart uploads on this build; use an amd64 build or split the archive", file.Path)
+		if err := checkArchiveUploadSize(file); err != nil {
+			return result, err
 		}
 	}
 	uploader := manager.NewUploader(out.client, func(u *manager.Uploader) {
@@ -288,7 +288,19 @@ func checkArchiveUploadWAL(filename string) error {
 	return checkSQLiteSidecars(filename)
 }
 
+func checkArchiveUploadSize(input archiveUploadFile) error {
+	// The SDK uses int for each part's length, including auto-grown parts.
+	partSize := input.Size/int64(manager.MaxUploadParts) + 1
+	if partSize > maxS3UploadPartSize || partSize > int64(^uint(0)>>1) {
+		return fmt.Errorf("archive %s is too large for multipart uploads on this build; use an amd64 build or split the archive", input.Path)
+	}
+	return nil
+}
+
 func uploadArchiveFile(parent context.Context, out *s3Output, uploader *manager.Uploader, input archiveUploadFile, timeout time.Duration) error {
+	if err := checkArchiveUploadSize(input); err != nil {
+		return err
+	}
 	file, err := os.Open(input.Path)
 	if err != nil {
 		return fmt.Errorf("open archive %s: %w", input.Path, err)
