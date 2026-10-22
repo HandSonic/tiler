@@ -239,8 +239,8 @@ func TestTaskMBTilesBatchCommitFailureAndRetry(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	// Both inserts succeed; the missing parent makes COMMIT fail. This checks
-	// that queued tiles are acknowledged only after the whole batch commits.
+	// Both inserts succeed; the missing parent makes COMMIT fail. After the
+	// batch rolls back, individual retries must preserve the healthy tile.
 	_, err = db.Exec(`PRAGMA foreign_keys=ON;
 		CREATE TABLE allowed (x INTEGER PRIMARY KEY);
 		INSERT INTO allowed VALUES (0);
@@ -269,17 +269,18 @@ func TestTaskMBTilesBatchCommitFailureAndRetry(t *testing.T) {
 	if err := db.QueryRow("SELECT count(*) FROM tiles").Scan(&count); err != nil {
 		t.Fatal(err)
 	}
-	if count != 0 || task.Stats() != (DownloadStats{Failed: 2}) || task.manifest.Len() != 2 {
-		t.Fatalf("failed commit was acknowledged: rows=%d stats=%+v failures=%d", count, task.Stats(), task.manifest.Len())
+	if count != 1 || task.Stats() != (DownloadStats{Saved: 1, Failed: 1}) || task.manifest.Len() != 1 {
+		t.Fatalf("failed batch did not isolate the bad tile: rows=%d stats=%+v failures=%d", count, task.Stats(), task.manifest.Len())
 	}
 	if _, err := db.Exec("INSERT INTO allowed VALUES (1)"); err != nil {
 		t.Fatal(err)
 	}
+	tiles = tiles[1:] // Only the failed tile needs another download.
 	writeQueued()
 	if err := db.QueryRow("SELECT count(*) FROM tiles").Scan(&count); err != nil {
 		t.Fatal(err)
 	}
-	if count != 2 || task.Stats() != (DownloadStats{Saved: 2, Failed: 2}) || task.manifest.Len() != 0 {
+	if count != 2 || task.Stats() != (DownloadStats{Saved: 2, Failed: 1}) || task.manifest.Len() != 0 {
 		t.Fatalf("retry did not commit and resolve failures: rows=%d stats=%+v failures=%d", count, task.Stats(), task.manifest.Len())
 	}
 }

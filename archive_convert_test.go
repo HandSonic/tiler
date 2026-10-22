@@ -228,10 +228,16 @@ func TestArchivePBFHasSingleGzipLayer(t *testing.T) {
 	input := t.TempDir()
 	// A valid MVT with one empty layer named test, extent 4096, version 2.
 	raw := []byte{0x1a, 0x0b, 0x0a, 0x04, 't', 'e', 's', 't', 0x28, 0x80, 0x20, 0x78, 0x02}
-	packed, err := archiveGzip(raw)
+	// Concatenated gzip is readable by Go but must be normalized for browsers.
+	packed, err := archiveGzip(raw[:6])
 	if err != nil {
 		t.Fatal(err)
 	}
+	rest, err := archiveGzip(raw[6:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	packed = append(packed, rest...)
 	archiveTestWrite(t, filepath.Join(input, "0", "0", "0.pbf"), packed)
 	archiveTestWrite(t, filepath.Join(input, "metadata.json"), []byte(`{"vector_layers":[{"id":"test","fields":{}}]}`))
 	output := filepath.Join(t.TempDir(), "vector.pmtiles")
@@ -242,13 +248,15 @@ func TestArchivePBFHasSingleGzipLayer(t *testing.T) {
 	if header.TileType != pm.Mvt || header.TileCompression != pm.Gzip {
 		t.Fatalf("bad vector header=%+v", header)
 	}
-	reader, err := gzip.NewReader(bytes.NewReader(contents[0]))
+	compressed := bytes.NewReader(contents[0])
+	reader, err := gzip.NewReader(compressed)
 	if err != nil {
 		t.Fatal(err)
 	}
+	reader.Multistream(false)
 	body, err := io.ReadAll(reader)
 	reader.Close()
-	if err != nil || !bytes.Equal(body, raw) {
+	if err != nil || compressed.Len() != 0 || !bytes.Equal(body, raw) {
 		t.Fatalf("PBF changed or double gzipped: %x %v", body, err)
 	}
 }

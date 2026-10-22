@@ -467,8 +467,14 @@ func (task *Task) savePipe() {
 		for i := 1; i < len(batch); i++ {
 			batch[i] = <-task.savingpipe
 		}
-		err := saveToMBTiles(batch, task.db)
+		batchErr := saveToMBTiles(batch, task.db)
 		for _, tile := range batch {
+			err := batchErr
+			if err != nil && len(batch) > 1 {
+				// The batch has rolled back. Isolate a failing tile so other
+				// queued tiles can still commit, as with individual writes.
+				err = saveToMBTiles([]Tile{tile}, task.db)
+			}
 			if err != nil {
 				task.recordTileFailure(tile.T, tile.Source, fmt.Errorf("save %v tile to mbtiles: %w", tile.T, err))
 			} else {
