@@ -17,8 +17,8 @@ import (
 type archiveVisit func(z int, x, y uint32, body []byte, format string) error
 
 // convertLocalArchive uses one temporary SQLite database as the common,
-// bounded-memory representation. Archive replacement happens only after all
-// input tiles and metadata have been validated and exported successfully.
+// bounded-memory representation. Compact append stages only incoming tiles and
+// affected bundles; other archives are replaced after full validation/export.
 func convertLocalArchive(ctx context.Context, input, output string, opts ArchiveConvertOptions) (ArchiveConvertResult, error) {
 	var result ArchiveConvertResult
 	if ctx == nil {
@@ -152,6 +152,9 @@ func convertLocalArchive(ctx context.Context, input, output string, opts Archive
 		return result, err
 	}
 	defer os.RemoveAll(work)
+	if existing && opts.Append && kind == "compactv2" {
+		return archiveAppendCompactLocal(ctx, input, destination, work, opts)
+	}
 	stage := filepath.Join(work, "combined.mbtiles")
 	db, err := archiveOpenSQLite(stage, false)
 	if err != nil {
@@ -192,8 +195,6 @@ func convertLocalArchive(ctx context.Context, input, output string, opts Archive
 					return archiveWalkMB(ctx, path, visit)
 				case "pmtiles":
 					return archiveWalkPM(ctx, path, visit)
-				case "compactv2":
-					return archiveWalkCompact(ctx, path, visit)
 				default:
 					return archiveWalkDirectoryCanonical(ctx, path, pattern, true, visit)
 				}
@@ -260,15 +261,6 @@ func convertLocalArchive(ctx context.Context, input, output string, opts Archive
 			targetFormat, err = archiveFormat(incomingMetadata["format"])
 			if err != nil {
 				return err
-			}
-		}
-		if existingInput && kind == "compactv2" {
-			originalFormat, err := archiveFormat(incomingMetadata["format"])
-			if err != nil {
-				return err
-			}
-			if originalFormat != "" && targetFormat != originalFormat {
-				return fmt.Errorf("Compact v2 append cannot change the existing tile format")
 			}
 		}
 		if metadata == nil {
@@ -351,11 +343,6 @@ func convertLocalArchive(ctx context.Context, input, output string, opts Archive
 		stagedDir := filepath.Join(work, "compact")
 		if err := archiveExportCompact(ctx, stage, stagedDir, metadata); err != nil {
 			return result, err
-		}
-		if existing && opts.Append {
-			if err := archivePreserveCompactFailures(ctx, destination, stagedDir); err != nil {
-				return result, err
-			}
 		}
 		if err := ctx.Err(); err != nil {
 			return result, err
@@ -706,46 +693,23 @@ func archiveWalkMB(ctx context.Context, input string, visit archiveVisit) (map[s
 	return metadata, nil
 }
 
-// A Compact cache stores its default repair report inside the directory that
-// append replaces. Preserve its bytes and original target binding on rebuild.
-func archivePreserveCompactFailures(ctx context.Context, original, staged string) error {
+// Append leaves repair reports in place. Validate the default report and its
+// target binding before changing the cache, as with a full conversion rebuild.
+func archiveValidateCompactFailures(original string) error {
 	path := filepath.Join(original, "failures.json")
 	if err := validateOutputFilePath(original, path); err != nil {
 		return err
 	}
-	source, err := os.Open(path)
+	_, err := os.Lstat(path)
 	if os.IsNotExist(err) {
 		return nil
 	}
 	if err != nil {
 		return err
 	}
-	defer source.Close()
-	info, err := source.Stat()
+	manifest, err := LoadFailureManifest(path)
 	if err != nil {
-		return err
-	}
-	if !info.Mode().IsRegular() || info.Size() > maxFailureManifestBytes {
-		return fmt.Errorf("Compact repair report must be a regular JSON file of at most 64 MiB")
-	}
-	copyPath := filepath.Join(staged, "failures.json")
-	copy, err := os.OpenFile(copyPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, info.Mode().Perm())
-	if err != nil {
-		return err
-	}
-	err = archiveCopy(ctx, copy, io.LimitReader(source, maxFailureManifestBytes+1))
-	if err == nil {
-		err = copy.Chmod(info.Mode().Perm())
-	}
-	if closeErr := copy.Close(); err == nil {
-		err = closeErr
-	}
-	if err != nil {
-		return err
-	}
-	manifest, err := LoadFailureManifest(copyPath)
-	if err != nil {
-		return fmt.Errorf("preserve Compact repair report: %w", err)
+		return fmt.Errorf("validate Compact repair report: %w", err)
 	}
 	if target, ok := manifest.Target(); !ok || !sameFailureTarget(target, FailureTarget{Kind: "compactv2", Path: original}) {
 		return fmt.Errorf("Compact repair report belongs to a different output target")

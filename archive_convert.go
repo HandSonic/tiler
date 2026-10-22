@@ -49,8 +49,12 @@ type ArchiveConvertOptions struct {
 }
 
 type ArchiveConvertResult struct {
-	Tiles  int64
-	Format string
+	// Tiles is the complete output count, except for an incremental Compact
+	// append, where it counts only the newly added tiles. Counts are final
+	// only when conversion returns without error.
+	Tiles       int64
+	Format      string
+	Incremental bool
 }
 
 type archiveExtent struct {

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -29,6 +30,9 @@ type ArchiveUploadOptions struct {
 	Timeout     time.Duration
 	PartSize    int64
 	Concurrency int
+	// Converted Compact appends extend the existing grid before publishing
+	// bundles, so a partial upload never leaves tiles beyond the declared LODs.
+	compactAppend bool
 }
 
 // ArchiveUploadObject describes an archive whose upload has completed.
@@ -95,6 +99,13 @@ func UploadArchives(ctx context.Context, out *s3Output, inputs []string, opts Ar
 	files, err := planArchiveUploads(ctx, out.prefix, inputs)
 	if err != nil {
 		return result, err
+	}
+	if opts.compactAppend {
+		sort.SliceStable(files, func(i, j int) bool {
+			left, _ := compactCacheFile(filepath.Base(files[i].Path))
+			right, _ := compactCacheFile(filepath.Base(files[j].Path))
+			return left && !right
+		})
 	}
 	for _, file := range files {
 		// The SDK uses int for each part's length. Reject an auto-grown part

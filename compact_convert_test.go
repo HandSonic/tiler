@@ -36,6 +36,7 @@ func TestCompactConvertRoundTripAndAppend(t *testing.T) {
 	// reversal and errors in selecting the bundle during a conversion.
 	archiveTestWrite(t, filepath.Join(regionA, "8", "127", "129.png"), red)
 	archiveTestWrite(t, filepath.Join(regionA, "8", "128", "130.png"), blue)
+	archiveTestWrite(t, filepath.Join(regionA, "7", "0", "0.png"), blue)
 	customJSON := `{"nested":true,"revision":9007199254740993}`
 	archiveTestWrite(t, filepath.Join(regionA, "metadata.json"), []byte(`{"json":{"json":`+customJSON+`,"custom_id":9007199254740993,"id":9007199254740993,"basename":false}}`))
 	mbtiles := filepath.Join(root, "region-a.mbtiles")
@@ -43,11 +44,20 @@ func TestCompactConvertRoundTripAndAppend(t *testing.T) {
 		t.Fatal(err)
 	}
 	compact := filepath.Join(root, "compact")
-	if result, err := ConvertArchive(ctx, mbtiles, compact, ArchiveConvertOptions{OutputKind: "compactv2"}); err != nil || result.Tiles != 2 {
+	if result, err := ConvertArchive(ctx, mbtiles, compact, ArchiveConvertOptions{OutputKind: "compactv2"}); err != nil || result.Tiles != 3 {
 		t.Fatalf("MBTiles to Compact v2: result=%+v err=%v", result, err)
 	}
-	// A partial download's repair report must survive replacing the cache
-	// directory during conversion append, with bytes and destination intact.
+	untouched := []string{compactPath(compact, 7, 0, 0), compactPath(compact, 8, 127, 129)}
+	previousFiles := make([]os.FileInfo, len(untouched))
+	for i, path := range untouched {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		previousFiles[i] = info
+	}
+	// A partial download's repair report stays in place, with bytes and
+	// destination binding intact, while affected bundles are appended.
 	report := filepath.Join(compact, "failures.json")
 	manifest := newFailureManifest("world", PNG)
 	if err := manifest.SetTarget(FailureTarget{Kind: "compactv2", Path: compact}); err != nil {
@@ -66,14 +76,33 @@ func TestCompactConvertRoundTripAndAppend(t *testing.T) {
 	regionB := filepath.Join(root, "region-b")
 	archiveTestWrite(t, filepath.Join(regionB, "8", "127", "129.png"), green)
 	archiveTestWrite(t, filepath.Join(regionB, "8", "129", "131.png"), green)
+	archiveTestWrite(t, filepath.Join(regionB, "9", "130", "132.png"), green)
+	archiveTestWrite(t, filepath.Join(regionB, "metadata.json"), []byte(`{"bounds":[0,0,1,1]}`))
 	// An existing conf.xml identifies the destination without -output-type.
-	if result, err := ConvertArchive(ctx, regionB, compact, ArchiveConvertOptions{Append: true}); err != nil || result.Tiles != 3 {
+	if result, err := ConvertArchive(ctx, regionB, compact, ArchiveConvertOptions{Append: true, Metadata: map[string]string{"name": "combined"}}); err != nil || result.Tiles != 2 || !result.Incremental {
 		t.Fatalf("Compact v2 append: result=%+v err=%v", result, err)
+	}
+	for i, path := range untouched {
+		info, err := os.Stat(path)
+		if err != nil || !os.SameFile(previousFiles[i], info) || !previousFiles[i].ModTime().Equal(info.ModTime()) {
+			t.Fatalf("append rewrote an unrelated or overlap-only bundle %s: %v", path, err)
+		}
+	}
+	merged, err := compactReadMetadata(compact)
+	if err != nil || merged["minzoom"] != "7" || merged["maxzoom"] != "9" || merged["name"] != "combined" {
+		t.Fatalf("append lost old coverage or explicit metadata: %v: %v", merged, err)
+	}
+	bounds, err := downloadMetadataBounds(merged["bounds"])
+	if err != nil || bounds[2] < float64(130)/256*360-180 {
+		t.Fatalf("declared input bounds hid an appended tile: %v: %v", bounds, err)
+	}
+	if result, err := ConvertArchive(ctx, regionB, compact, ArchiveConvertOptions{Append: true}); err != nil || result.Tiles != 0 || !result.Incremental {
+		t.Fatalf("retry did not skip completed append tiles: result=%+v err=%v", result, err)
 	}
 	if preserved, err := os.ReadFile(report); err != nil || !bytes.Equal(preserved, originalReport) {
 		t.Fatalf("append lost or changed the original repair report: %v", err)
 	}
-	expected := map[string][]byte{"8/127/129": red, "8/128/130": blue, "8/129/131": green}
+	expected := map[string][]byte{"7/0/0": blue, "8/127/129": red, "8/128/130": blue, "8/129/131": green, "9/130/132": green}
 	checkTiles := func(path string) {
 		t.Helper()
 		actual := archiveV2Snapshot(t, path, "")
@@ -100,6 +129,33 @@ func TestCompactConvertRoundTripAndAppend(t *testing.T) {
 	}
 	checkTiles(compact)
 
+	large := image.NewRGBA(image.Rect(0, 0, 512, 512))
+	var encoded bytes.Buffer
+	if err := png.Encode(&encoded, large); err != nil {
+		t.Fatal(err)
+	}
+	archiveTestWrite(t, filepath.Join(invalid, "8", "130", "132.png"), encoded.Bytes())
+	if _, err := ConvertArchive(ctx, invalid, compact, ArchiveConvertOptions{Append: true}); err == nil {
+		t.Fatal("append changed the established Compact tile dimensions")
+	}
+	checkTiles(compact)
+	// A cancelled initial download can leave metadata but no bundle. Its
+	// default 256-pixel config must still permit the first actual 512 tile.
+	empty := filepath.Join(root, "initialized")
+	cache, err := compactOpen(empty, merged, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cache.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if result, err := ConvertArchive(ctx, invalid, empty, ArchiveConvertOptions{Append: true}); err != nil || result.Tiles != 1 {
+		t.Fatalf("append into initialized cache: %+v: %v", result, err)
+	}
+	if metadata, err := compactReadMetadata(empty); err != nil || metadata["pixel_scale"] != "512" {
+		t.Fatalf("initial tile dimensions were not established: %v: %v", metadata, err)
+	}
+
 	archiveTestWrite(t, report, []byte("invalid repair report"))
 	if _, err := ConvertArchive(ctx, regionB, compact, ArchiveConvertOptions{Append: true}); err == nil {
 		t.Fatal("append discarded an unreadable repair report")
@@ -109,6 +165,12 @@ func TestCompactConvertRoundTripAndAppend(t *testing.T) {
 	}
 	checkTiles(compact)
 	archiveTestWrite(t, report, originalReport)
+	if err := os.Remove(report); err != nil {
+		t.Fatal(err)
+	}
+	if result, err := ConvertArchive(ctx, regionB, compact, ArchiveConvertOptions{Append: true}); err != nil || result.Tiles != 0 {
+		t.Fatalf("append without an optional repair report: %+v: %v", result, err)
+	}
 
 	pmtiles := filepath.Join(root, "combined.pmtiles")
 	if _, err := ConvertArchive(ctx, compact, pmtiles, ArchiveConvertOptions{}); err != nil {

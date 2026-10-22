@@ -112,7 +112,7 @@ append = true
 
 `convert` 支持本地/S3 瓦片目录、MBTiles、PMTiles v3、Compact v2 之间双向转换；S3 归档地址可写成 `s3://bucket/maps/basemap.pmtiles`，瓦片前缀使用结尾 `/`。纯本地转换默认不读取 TOML，S3 转换用 `-c` 读取 endpoint、region 和凭证配置，bucket/对象路径由 URI 指定。目录元数据中的 `tile_path` 可自动识别，也可用 `-input-tile-path` 指定输入布局，`-tile-path` 指定输出布局。
 
-MBTiles 支持 z0–30，PMTiles 支持 z0–26。默认拒绝已有目标，`-overwrite` 允许替换，`-append` 则保留旧坐标并合并新瓦片。归档追加先合并再完整重建并替换；本地目录替换会先完整暂存，散瓦片目录追加和 S3 散瓦片则逐个写入，中断后可能已有部分文件/对象完成。转换构建不保存跨进程断点。PBF 在归档中规范为一层 gzip，本地目录导出为原始 PBF；PBF 转 MBTiles/PMTiles 还需有效的 `vector_layers`，可从输入元数据或 `-metadata metadata.json` 提供。构建归档使用临时数据库/归档并清理，不会额外解包出零散图片；明确输出文件目录时才生成单张瓦片。
+MBTiles 支持 z0–30，PMTiles 支持 z0–26。默认拒绝已有目标，`-overwrite` 允许替换，`-append` 则保留旧坐标并合并新瓦片。MBTiles/PMTiles 追加先合并再完整重建并替换；已有 Compact 追加只合并新输入涉及的 bundle，S3 只下载相关包、上传改变的包，详见 [追加与中断处理](docs/compact-v2.md#已有数据互转追加和-s3)。本地目录替换会先完整暂存；Compact 追加、散瓦片目录追加和 S3 散瓦片在发布中断后可能已有部分结果完成，可重跑 `-append` 补齐。转换构建不保存跨进程断点。PBF 在归档中规范为一层 gzip，本地目录导出为原始 PBF；PBF 转 MBTiles/PMTiles 还需有效的 `vector_layers`，可从输入元数据或 `-metadata metadata.json` 提供。构建归档使用临时数据库/归档并清理，不会额外解包出零散图片；明确输出文件目录时才生成单张瓦片。
 
 `upload` 还可接收显式 Compact v2 根目录（规则见专门说明）；也可接收多个 `.mbtiles`、`.pmtiles` 文件或目录，递归上传目录内的归档并保留相对路径。默认每个文件超时 1 小时，初始分段 8 MiB、每文件并发 3；上传完成才替换同 key 对象。失败后尝试中止当前分段上传并报告已完成数量，不提供跨进程的分段续传。上传 MBTiles 前须停止写入并完成 WAL checkpoint；存在非空 `-wal` 或活跃回滚事务日志时会拒绝上传。
 

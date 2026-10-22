@@ -33,8 +33,9 @@ func TestCompactS3RoundTripAppendAndUpload(t *testing.T) {
 	red, blue, green := makePNG(color.RGBA{R: 255, A: 255}), makePNG(color.RGBA{B: 255, A: 255}), makePNG(color.RGBA{G: 255, A: 255})
 	store.put("source/tiles/8/127/129.png", red)
 	store.put("source/tiles/8/128/130.png", blue)
+	store.put("source/tiles/7/64/65.png", blue) // Unrelated old bundle.
 	const destination = "s3://destination/cache/"
-	if result, err := ConvertArchive(ctx, "s3://source/tiles/", destination, ArchiveConvertOptions{S3: out, OutputKind: "compactv2"}); err != nil || result.Tiles != 2 {
+	if result, err := ConvertArchive(ctx, "s3://source/tiles/", destination, ArchiveConvertOptions{S3: out, OutputKind: "compactv2"}); err != nil || result.Tiles != 3 {
 		t.Fatalf("S3 loose tiles to Compact: result=%+v err=%v", result, err)
 	}
 	if len(store.get("destination/cache/conf.xml")) == 0 || len(store.get("destination/cache/_alllayers/L08/R0080C0000.bundle")) == 0 || len(store.get("destination/cache/_alllayers/L08/R0080C0080.bundle")) == 0 {
@@ -44,14 +45,42 @@ func TestCompactS3RoundTripAppendAndUpload(t *testing.T) {
 	if _, err := ConvertArchive(ctx, destination, pmtiles, ArchiveConvertOptions{S3: out}); err != nil {
 		t.Fatal(err)
 	}
-	if got := archiveV2Snapshot(t, pmtiles, ""); len(got) != 2 || !bytes.Equal(got["8/127/129"], red) || !bytes.Equal(got["8/128/130"], blue) {
+	if got := archiveV2Snapshot(t, pmtiles, ""); len(got) != 3 || !bytes.Equal(got["8/127/129"], red) || !bytes.Equal(got["8/128/130"], blue) || !bytes.Equal(got["7/64/65"], blue) {
 		t.Fatal("paginated Compact to PMTiles conversion changed tiles")
 	}
 	regionB := filepath.Join(root, "region-b")
 	archiveTestWrite(t, filepath.Join(regionB, "8", "127", "129.png"), green)
 	archiveTestWrite(t, filepath.Join(regionB, "8", "129", "131.png"), green)
-	if result, err := ConvertArchive(ctx, regionB, destination, ArchiveConvertOptions{S3: out, OutputKind: "compactv2", Append: true}); err != nil || result.Tiles != 3 {
+	beforeAppend := store.totalRequests()
+	if result, err := ConvertArchive(ctx, regionB, destination, ArchiveConvertOptions{S3: out, OutputKind: "compactv2", Append: true}); err != nil || !result.Incremental || result.Tiles != 1 {
 		t.Fatalf("S3 Compact append: result=%+v err=%v", result, err)
+	}
+	store.mu.Lock()
+	requests := append([]string(nil), store.requests[beforeAppend:]...)
+	store.mu.Unlock()
+	var writtenBundles []string
+	for _, request := range requests {
+		if strings.HasSuffix(request, "cache/_alllayers/L07/R0000C0000.bundle") {
+			t.Fatalf("incremental append accessed an unrelated old bundle: %s", request)
+		}
+		if strings.HasPrefix(request, "PUT ") && strings.HasSuffix(request, ".bundle") {
+			writtenBundles = append(writtenBundles, request)
+		}
+	}
+	if len(writtenBundles) != 1 || writtenBundles[0] != "PUT destination/cache/_alllayers/L08/R0080C0080.bundle" {
+		t.Fatalf("append must upload only the changed bundle: %v", writtenBundles)
+	}
+	beforeRetry := store.totalRequests()
+	if result, err := ConvertArchive(ctx, regionB, destination, ArchiveConvertOptions{S3: out, OutputKind: "compactv2", Append: true}); err != nil || !result.Incremental || result.Tiles != 0 {
+		t.Fatalf("S3 Compact repeated append: result=%+v err=%v", result, err)
+	}
+	store.mu.Lock()
+	requests = append([]string(nil), store.requests[beforeRetry:]...)
+	store.mu.Unlock()
+	for _, request := range requests {
+		if strings.HasPrefix(request, "PUT ") && strings.HasSuffix(request, ".bundle") {
+			t.Fatalf("repeated append uploaded an unchanged bundle: %s", request)
+		}
 	}
 	// A sibling whose name starts with the source name is not nested in it.
 	const sibling = "s3://destination/cached/"
@@ -62,7 +91,7 @@ func TestCompactS3RoundTripAppendAndUpload(t *testing.T) {
 	if _, err := ConvertArchive(ctx, sibling, local, ArchiveConvertOptions{S3: out, OutputKind: "compactv2"}); err != nil {
 		t.Fatal(err)
 	}
-	if got := archiveV2Snapshot(t, local, ""); len(got) != 3 || !bytes.Equal(got["8/127/129"], red) || !bytes.Equal(got["8/128/130"], blue) || !bytes.Equal(got["8/129/131"], green) {
+	if got := archiveV2Snapshot(t, local, ""); len(got) != 4 || !bytes.Equal(got["8/127/129"], red) || !bytes.Equal(got["8/128/130"], blue) || !bytes.Equal(got["8/129/131"], green) || !bytes.Equal(got["7/64/65"], blue) {
 		t.Fatal("S3 Compact append failed to preserve old tiles and add the new region")
 	}
 
@@ -77,8 +106,30 @@ func TestCompactS3RoundTripAppendAndUpload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Uploaded != 5 || result.Objects[len(result.Objects)-1].Key != "uploaded/conf.xml" || len(store.get("destination/uploaded/private.json")) != 0 || len(store.get("destination/uploaded/notes.xml")) != 0 || len(store.get("destination/uploaded/8/0/0.png")) != 0 {
+	if result.Uploaded != 6 || result.Objects[len(result.Objects)-1].Key != "uploaded/conf.xml" || len(store.get("destination/uploaded/private.json")) != 0 || len(store.get("destination/uploaded/notes.xml")) != 0 || len(store.get("destination/uploaded/8/0/0.png")) != 0 {
 		t.Fatalf("Compact upload included unrelated files or wrong order: %+v", result)
+	}
+
+	// Fail the second bundle at a new zoom. Metadata must already include
+	// that zoom, so the partially appended cache remains readable and retryable.
+	regionC := filepath.Join(root, "region-c")
+	archiveTestWrite(t, filepath.Join(regionC, "9", "127", "129.png"), green)
+	archiveTestWrite(t, filepath.Join(regionC, "9", "128", "130.png"), green)
+	failedUpload := "PUT destination/cache/_alllayers/L09/R0080C0080.bundle"
+	store.fail(failedUpload, http.StatusForbidden)
+	if _, err := ConvertArchive(ctx, regionC, destination, ArchiveConvertOptions{S3: out, OutputKind: "compactv2", Append: true}); err == nil {
+		t.Fatal("append ignored a failed bundle upload")
+	}
+	partial := filepath.Join(root, "partial.mbtiles")
+	if _, err := ConvertArchive(ctx, destination, partial, ArchiveConvertOptions{S3: out}); err != nil {
+		t.Fatalf("interrupted append left the cache unreadable: %v", err)
+	}
+	if got := archiveV2Snapshot(t, partial, ""); len(got) != 5 || !bytes.Equal(got["8/127/129"], red) || !bytes.Equal(got["9/127/129"], green) {
+		t.Fatal("interrupted append lost old tiles or the completed bundle")
+	}
+	store.fail(failedUpload, 0)
+	if result, err := ConvertArchive(ctx, regionC, destination, ArchiveConvertOptions{S3: out, OutputKind: "compactv2", Append: true}); err != nil || result.Tiles != 1 {
+		t.Fatalf("retry must add only the missing bundle: result=%+v err=%v", result, err)
 	}
 
 	puts := store.count("PUT")

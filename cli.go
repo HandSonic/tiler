@@ -122,7 +122,11 @@ func runConvertCLI(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(stdout, "Converted %d %s tiles to %s\n", result.Tiles, result.Format, *output)
+	if result.Incremental {
+		fmt.Fprintf(stdout, "Appended %d new %s tiles to %s\n", result.Tiles, result.Format, *output)
+	} else {
+		fmt.Fprintf(stdout, "Converted %d %s tiles to %s\n", result.Tiles, result.Format, *output)
+	}
 	return nil
 }
 
