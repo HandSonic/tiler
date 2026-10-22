@@ -8,9 +8,6 @@ import (
 	"github.com/paulmach/orb/maptile"
 )
 
-// TileSize 默认瓦片大小
-const TileSize = 256
-
 // Tile 自定义瓦片存储
 type Tile struct {
 	T      maptile.Tile
@@ -33,9 +30,7 @@ type Layer struct {
 
 // Constants representing TileFormat types
 const (
-	GZIP string = "gzip" // encoding = gzip
-	ZLIB        = "zlib" // encoding = deflate
-	PNG         = "png"
+	PNG  string = "png"
 	JPG         = "jpg"
 	PBF         = "pbf"
 	WEBP        = "webp"

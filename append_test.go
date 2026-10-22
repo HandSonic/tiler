@@ -228,7 +228,7 @@ func TestDownloadMetadataMergesVectorLayersAndRejectsConflictingTypes(t *testing
 }
 
 func TestDownloadMetadataResumeDoesNotRoundCoverageInward(t *testing.T) {
-	previous := map[string]string{"format": "png", "bounds": "-90.0000001,-45.0000001,90.0000001,45.0000001", "minzoom": "1", "maxzoom": "20"}
+	previous := map[string]string{"format": "png", "bounds": "-90.0000001,-45.0000001,90.0000001,45.0000001", "minzoom": "1", "maxzoom": "20", "pixel_scale": "512"}
 	current := map[string]string{"format": "png", "bounds": "-10,-20,10,20", "minzoom": "5", "maxzoom": "8"}
 	merged, err := mergeDownloadMetadata(previous, current, false)
 	if err != nil {
@@ -236,6 +236,9 @@ func TestDownloadMetadataResumeDoesNotRoundCoverageInward(t *testing.T) {
 	}
 	if merged["bounds"] != previous["bounds"] || merged["minzoom"] != "1" || merged["maxzoom"] != "20" {
 		t.Fatalf("narrow resume shrank previous coverage: %v", merged)
+	}
+	if merged["pixel_scale"] != previous["pixel_scale"] {
+		t.Fatalf("resume changed the supplied tile size: %v", merged)
 	}
 }
 

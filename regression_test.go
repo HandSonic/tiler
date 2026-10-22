@@ -225,6 +225,9 @@ func TestResumeSkipsExistingTilesAndKeepsOutputPath(t *testing.T) {
 				if got := atomic.LoadInt32(&requests); got != 1 {
 					t.Errorf("source requests across two runs = %d; want 1", got)
 				}
+				if value, exists := appendReadMetadata(t, format, outputPath)["pixel_scale"]; exists {
+					t.Errorf("download invented an unmeasured tile size: pixel_scale=%s", value)
+				}
 				wantName := name
 				if wantName == "" {
 					wantName = "regression-z0-0"

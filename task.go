@@ -38,7 +38,6 @@ type Task struct {
 	Layers       []Layer
 	TileMap      TileMap
 	Total        int64
-	Current      int64
 	Bar          *pb.ProgressBar
 	db           *sql.DB
 	workerCount  int
@@ -302,7 +301,6 @@ func (task *Task) MetaItems() map[string]string {
 		"basename":    task.TileMap.Name,
 		"format":      task.TileMap.Format,
 		"type":        "baselayer",
-		"pixel_scale": strconv.Itoa(TileSize),
 		"bounds":      fmt.Sprintf(`%s,%s,%s,%s`, formatDownloadCoordinate(b.Left()), formatDownloadCoordinate(b.Bottom()), formatDownloadCoordinate(b.Right()), formatDownloadCoordinate(b.Top())),
 		"center":      fmt.Sprintf(`%s,%s,%d`, formatDownloadCoordinate(c.X()), formatDownloadCoordinate(c.Y()), (task.Min+task.Max)/2),
 		"minzoom":     strconv.Itoa(task.Min),
