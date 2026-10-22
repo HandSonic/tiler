@@ -316,6 +316,17 @@ func TestS3ConversionArchiveExactKeyAndAppend(t *testing.T) {
 	if !bytes.Equal(archiveS3ReadMBTile(t, copy, 2, 0, 1), red) {
 		t.Fatal("S3->S3 archive conversion lost tiles")
 	}
+	// S3 object keys and prefixes are independent even when their names match.
+	previous := store.get("maps/exact/final-name.pmtiles")
+	if _, err := ConvertArchive(context.Background(), destination, destination+"/", ArchiveConvertOptions{S3: out}); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(store.get("maps/exact/final-name.pmtiles"), previous) || !bytes.Equal(store.get("maps/exact/final-name.pmtiles/2/0/1.png"), red) {
+		t.Fatal("converting an object into its matching prefix changed the source or lost a tile")
+	}
+	if _, err := ConvertArchive(context.Background(), destination+"/", destination, ArchiveConvertOptions{S3: out, Overwrite: true}); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestS3ConversionGzipContentEncoding(t *testing.T) {
@@ -581,13 +592,14 @@ func TestS3ConversionURIs(t *testing.T) {
 	}
 	store, out := archiveS3Store(t)
 	for _, pair := range [][2]string{{"s3://bucket/tiles", "s3://bucket/tiles/"}, {"s3://bucket/tiles/", "s3://bucket/tiles"}, {"s3://bucket/a.mbtiles", "s3://bucket/a.mbtiles"}} {
-		if _, err := ConvertArchive(context.Background(), pair[0], pair[1], ArchiveConvertOptions{S3: out, Append: true}); err == nil || store.totalRequests() != 0 {
-			t.Fatalf("same S3 location was not rejected before networking: %v", pair)
+		if _, err := ConvertArchive(context.Background(), pair[0], pair[1], ArchiveConvertOptions{S3: out, Append: true}); err == nil || !strings.Contains(err.Error(), "same S3 location") || store.count(http.MethodPut) != 0 {
+			t.Fatalf("same S3 location was not rejected before writing: %v", pair)
 		}
 	}
+	requests := store.totalRequests()
 	for _, options := range []ArchiveConvertOptions{{Append: true, Overwrite: true}, {OutputKind: "unknown"}, {Format: "tiff"}} {
 		options.S3 = out
-		if _, err := ConvertArchive(context.Background(), "s3://source/tiles/", "s3://destination/tiles/", options); err == nil || store.totalRequests() != 0 {
+		if _, err := ConvertArchive(context.Background(), "s3://source/tiles/", "s3://destination/tiles/", options); err == nil || store.totalRequests() != requests {
 			t.Fatalf("invalid options were not rejected before networking: %+v", options)
 		}
 	}

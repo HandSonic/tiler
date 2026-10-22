@@ -223,6 +223,11 @@ func compactReadMetadata(root string) (map[string]string, error) {
 			metadata["bounds"] = "-180,-85.0511287798066,180,85.0511287798066"
 		}
 	}
+	bounds, err := archiveNumbers(metadata["bounds"], 4)
+	if err != nil {
+		return nil, err
+	}
+	metadata["bounds"] = archiveBoundsText(bounds)
 	if _, err := downloadMetadataBounds(metadata["bounds"]); err != nil {
 		return nil, err
 	}
@@ -533,10 +538,17 @@ func (cache *compactCache) writeMetadata() error {
 			return err
 		}
 	}
-	// The directory reader reserves json for the extension container. Keep
-	// an extension with that name inside it instead of flattening it away.
-	if value, exists := values["json"]; exists {
-		values["json"] = map[string]interface{}{"json": value}
+	// Reserved directory fields are decoded as strings. Keep typed extensions
+	// with those names in the JSON container, including an extension named json.
+	reserved := make(map[string]interface{})
+	for key, value := range values {
+		if archiveFlatMetadataKey(key) {
+			reserved[key] = value
+			delete(values, key)
+		}
+	}
+	if len(reserved) != 0 {
+		values["json"] = reserved
 	}
 	for key, value := range cache.metadata {
 		if key != "json" {

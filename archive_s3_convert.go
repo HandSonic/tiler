@@ -68,11 +68,6 @@ func ConvertArchive(ctx context.Context, input, output string, opts ArchiveConve
 	if !sourceRemote && !destinationRemote {
 		return convertLocalArchive(ctx, input, output, opts)
 	}
-	if sourceRemote && destinationRemote && source.bucket == destination.bucket {
-		if strings.TrimRight(source.key, "/") == strings.TrimRight(destination.key, "/") {
-			return zero, fmt.Errorf("input and output refer to the same S3 location")
-		}
-	}
 	work, err := os.MkdirTemp("", ".tiler-convert-s3-*")
 	if err != nil {
 		return zero, err
@@ -90,19 +85,22 @@ func ConvertArchive(ctx context.Context, input, output string, opts ArchiveConve
 			}
 			if kind != "" {
 				source.kind = kind
-				if destinationRemote && source.bucket == destination.bucket && source.key == destination.key && destination.kind != "file" {
-					return zero, fmt.Errorf("input and output refer to the same S3 object")
-				}
 			}
 		}
 		if destinationRemote && source.bucket == destination.bucket {
+			// An object and a same-named prefix are independent S3 locations.
+			// Resolve ambiguous input keys before comparing their identities.
+			destinationPrefix := destination.kind == "file" || destination.kind == "compactv2"
+			if (source.kind == "file") == destinationPrefix && strings.TrimRight(source.key, "/") == strings.TrimRight(destination.key, "/") {
+				return zero, fmt.Errorf("input and output refer to the same S3 location")
+			}
 			// Directory prefixes have the same overlap restriction as local
 			// directories. In particular, nested Compact output would leave
 			// bundles that make the original cache unreadable on its next scan.
 			if source.kind == "file" && strings.HasPrefix(destination.key, archiveS3Key(source.key, "")) {
 				return zero, fmt.Errorf("S3 input and output prefixes overlap: output cannot be inside the input prefix")
 			}
-			if (destination.kind == "file" || destination.kind == "compactv2") && strings.HasPrefix(source.key, archiveS3Key(destination.key, "")) {
+			if destinationPrefix && strings.HasPrefix(source.key, archiveS3Key(destination.key, "")) {
 				return zero, fmt.Errorf("S3 input and output prefixes overlap: output prefix cannot contain the input")
 			}
 		}

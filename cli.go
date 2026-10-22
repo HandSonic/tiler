@@ -236,15 +236,6 @@ func runDownloadCLI(command string, args []string, stdout, stderr io.Writer) err
 		fmt.Fprintln(stdout, "Failure manifest is empty; no tiles need repair.")
 		return nil
 	}
-	finished := make(chan struct{})
-	defer close(finished)
-	go func() {
-		select {
-		case <-ctx.Done():
-			task.Cancel()
-		case <-finished:
-		}
-	}()
 	if *interactive {
 		fmt.Fprintln(stdout, "Controls: p + Enter = pause, r + Enter = resume, q + Enter = stop")
 		go task.readControls(os.Stdin, stdout)

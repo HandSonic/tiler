@@ -16,7 +16,6 @@ import (
 
 func saveToMBTile(tile Tile, db *sql.DB) error {
 	_, err := db.Exec("insert or replace into tiles (zoom_level, tile_column, tile_row, tile_data) values (?, ?, ?, ?);", tile.T.Z, tile.T.X, tile.flipY(), tile.C)
-	// _, err := db.Exec("insert or ignore into tiles (zoom_level, tile_column, tile_row, tile_data) values (?, ?, ?, ?);", tile.T.Z, tile.T.X, tile.flipY(), tile.C)
 	if err != nil {
 		return err
 	}
@@ -67,10 +66,6 @@ func saveToFiles(tile Tile, task *Task) error {
 }
 
 func optimizeConnection(db *sql.DB) error {
-	// _, err := db.Exec("PRAGMA synchronous=0")
-	// if err != nil {
-	// 	return err
-	// }
 	_, err := db.Exec("PRAGMA locking_mode=EXCLUSIVE")
 	if err != nil {
 		return err
@@ -326,5 +321,3 @@ func validateGeoJSONLinearGeometry(geometry orb.Geometry) error {
 	}
 	return nil
 }
-
-// output gets called if there is a test failure for debugging.

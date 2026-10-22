@@ -198,8 +198,23 @@ func TestResumeSkipsExistingTilesAndKeepsOutputPath(t *testing.T) {
 				var outputPath string
 				for pass := 0; pass < 2; pass++ {
 					task := newRegressionTask(t, server.URL)
-					if err := task.Download(); err != nil {
-						t.Fatalf("download pass %d: %v", pass+1, err)
+					if pass == 1 {
+						// Cached tiles must bypass the worker queue and download throttle.
+						for i := 0; i < task.workerCount; i++ {
+							task.workers <- maptile.Tile{}
+						}
+					}
+					done := make(chan error, 1)
+					go func() { done <- task.Download() }()
+					select {
+					case err := <-done:
+						if err != nil {
+							t.Fatalf("download pass %d: %v", pass+1, err)
+						}
+					case <-time.After(3 * time.Second):
+						task.Cancel()
+						awaitRegressionError(t, done)
+						t.Fatalf("download pass %d did not finish with cached tiles", pass+1)
 					}
 					if pass == 0 {
 						outputPath = task.File

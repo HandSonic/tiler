@@ -301,14 +301,7 @@ func validateRelativeTilePath(relative string) error {
 			return fmt.Errorf("tile path contains characters that are invalid in Windows filenames")
 		}
 		base := strings.ToUpper(strings.TrimRight(strings.SplitN(segment, ".", 2)[0], " "))
-		reserved := base == "CON" || base == "PRN" || base == "AUX" || base == "NUL"
-		for _, prefix := range []string{"COM", "LPT"} {
-			if strings.HasPrefix(base, prefix) {
-				suffix := strings.TrimPrefix(base, prefix)
-				reserved = reserved || (len(suffix) == 1 && suffix[0] >= '1' && suffix[0] <= '9') || suffix == "¹" || suffix == "²" || suffix == "³"
-			}
-		}
-		if reserved {
+		if base == "CON" || base == "PRN" || base == "AUX" || base == "NUL" || isWindowsNumberedDevice(base) {
 			return fmt.Errorf("tile path contains reserved Windows filename %q", segment)
 		}
 	}

@@ -125,6 +125,18 @@ func TestCompactEmptyResumeAndCorruptIndex(t *testing.T) {
 	if decoded["revision"] != float64(7) || decoded["pixel_scale"] != "512" {
 		t.Fatalf("typed metadata or actual image size lost: %s", data)
 	}
+	// External TileJSON metadata can use a coordinate array instead of text.
+	decoded["bounds"] = []float64{-180, -85, 180, 85}
+	data, err = json.Marshal(decoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "metadata.json"), data, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := compactReadMetadata(root); err != nil {
+		t.Fatalf("valid bounds array rejected: %v", err)
+	}
 	config, _, err := compactReadConfig(root)
 	if err != nil {
 		t.Fatal(err)

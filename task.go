@@ -155,9 +155,6 @@ func newDownloadTaskContext(parent context.Context, layers []Layer, m TileMap, m
 			task.initErr = fmt.Errorf("layer zoom must be between 0 and 30")
 			return &task
 		}
-		if layers[i].URL == "" {
-			layers[i].URL = m.URL
-		}
 		if err := validateTileURL(layers[i].URL); err != nil {
 			task.initErr = fmt.Errorf("zoom %d: %w", layers[i].Zoom, err)
 			return &task
@@ -567,7 +564,7 @@ func (task *Task) downloadLayer(layer Layer, index int) {
 			task.Cancel()
 			return err
 		}
-		if task.resume && (task.outformat == "file" || task.outformat == "compactv2") {
+		if task.resume && (task.outformat == "file" || task.outformat == "mbtiles" || task.outformat == "compactv2") {
 			exists, err := task.tileExists(task.ctx, tile)
 			if err != nil || exists {
 				if err != nil {

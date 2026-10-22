@@ -37,7 +37,7 @@ func TestCompactConvertRoundTripAndAppend(t *testing.T) {
 	archiveTestWrite(t, filepath.Join(regionA, "8", "127", "129.png"), red)
 	archiveTestWrite(t, filepath.Join(regionA, "8", "128", "130.png"), blue)
 	customJSON := `{"nested":true,"revision":9007199254740993}`
-	archiveTestWrite(t, filepath.Join(regionA, "metadata.json"), []byte(`{"json":{"json":`+customJSON+`,"custom_id":9007199254740993}}`))
+	archiveTestWrite(t, filepath.Join(regionA, "metadata.json"), []byte(`{"json":{"json":`+customJSON+`,"custom_id":9007199254740993,"id":9007199254740993,"basename":false}}`))
 	mbtiles := filepath.Join(root, "region-a.mbtiles")
 	if _, err := ConvertArchive(ctx, regionA, mbtiles, ArchiveConvertOptions{}); err != nil {
 		t.Fatal(err)
@@ -133,7 +133,7 @@ func TestCompactConvertRoundTripAndAppend(t *testing.T) {
 	if err := json.Unmarshal([]byte(metadata["json"]), &extensions); err != nil {
 		t.Fatal(err)
 	}
-	if string(extensions["json"]) != customJSON || string(extensions["custom_id"]) != "9007199254740993" {
+	if string(extensions["json"]) != customJSON || string(extensions["custom_id"]) != "9007199254740993" || string(extensions["id"]) != "9007199254740993" || string(extensions["basename"]) != "false" {
 		t.Fatalf("Compact roundtrip changed JSON extensions: %s", metadata["json"])
 	}
 }
