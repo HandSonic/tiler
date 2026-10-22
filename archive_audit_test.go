@@ -142,10 +142,10 @@ func TestAuditArchiveDirectoryMetadataRejectsNullAndSpecialFiles(t *testing.T) {
 		if err == nil {
 			t.Fatal("named-pipe metadata was accepted")
 		}
-	case <-time.After(200 * time.Millisecond):
+	case <-time.After(3 * time.Second):
 		// Release the old implementation's blocking read before failing, so the
 		// reproduction itself never leaves a stuck goroutine or filesystem pipe.
-		writer, err := os.OpenFile(metadata, os.O_WRONLY, 0600)
+		writer, err := os.OpenFile(metadata, os.O_RDWR, 0600)
 		if err != nil {
 			t.Fatal(err)
 		}

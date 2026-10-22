@@ -75,8 +75,6 @@ def check_format(tiler, work, extension, tile_size=256):
             response = client.get(path)
             assert response.status_code == 200, (path, response.status, response.data[:400])
             assert response.data == expected, f"MapProxy served different bytes: {path}"
-            with Image.open(BytesIO(response.data)) as actual, Image.open(BytesIO(expected)) as original:
-                assert actual.tobytes() == original.tobytes(), f"Different decoded pixels: {path}"
 
     if extension == "png" and tile_size == 256:
         def bundles():

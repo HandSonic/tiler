@@ -31,8 +31,10 @@ func TestAuditConfigRejectsNamedPipe(t *testing.T) {
 		if err == nil {
 			t.Fatal("named pipe configuration should be rejected")
 		}
-	case <-time.After(250 * time.Millisecond):
-		writer, err := os.OpenFile(pipe, os.O_WRONLY, 0)
+	case <-time.After(3 * time.Second):
+		// O_RDWR also opens when the reader has already returned; cleanup must
+		// not wait for a peer after a scheduling delay on a loaded test runner.
+		writer, err := os.OpenFile(pipe, os.O_RDWR, 0)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -240,5 +242,23 @@ func TestAuditArchiveReplacementPreservesExistingMode(t *testing.T) {
 				t.Fatalf("conversion changed existing permissions: %o", info.Mode().Perm())
 			}
 		})
+	}
+	// File and Compact cache replacement share this directory publisher.
+	destination, staged := filepath.Join(t.TempDir(), "old"), filepath.Join(t.TempDir(), "new")
+	if err := os.Mkdir(destination, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(staged, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := archivePublishDirectory(staged, destination, true); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0700 {
+		t.Fatalf("directory replacement changed existing permissions: %o", info.Mode().Perm())
 	}
 }

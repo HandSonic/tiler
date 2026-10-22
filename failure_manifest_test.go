@@ -83,9 +83,9 @@ func TestFailureManifestRejectsFIFOWithoutBlocking(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "regular") {
 			t.Errorf("FIFO error=%v", err)
 		}
-	case <-time.After(200 * time.Millisecond):
+	case <-time.After(3 * time.Second):
 		// Release the old blocking open so this repro cannot leak a goroutine.
-		writer, err := os.OpenFile(filename, os.O_WRONLY, 0600)
+		writer, err := os.OpenFile(filename, os.O_RDWR, 0600)
 		if err != nil {
 			t.Fatal(err)
 		}

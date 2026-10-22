@@ -282,10 +282,10 @@ func TestAuditCLIRejectsNamedPipeMetadata(t *testing.T) {
 		if err == nil {
 			t.Fatal("named pipe metadata should be rejected")
 		}
-	case <-time.After(250 * time.Millisecond):
+	case <-time.After(3 * time.Second):
 		// Release the reader before reporting failure so the test leaves no
 		// blocked goroutine or open pipe behind.
-		writer, err := os.OpenFile(pipe, os.O_WRONLY, 0)
+		writer, err := os.OpenFile(pipe, os.O_RDWR, 0)
 		if err != nil {
 			t.Fatal(err)
 		}

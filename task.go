@@ -561,7 +561,7 @@ func (task *Task) downloadLayer(layer Layer, index int) {
 			task.Cancel()
 			return err
 		}
-		if task.resume && task.outformat == "file" {
+		if task.resume && (task.outformat == "file" || task.outformat == "compactv2") {
 			exists, err := task.tileExists(task.ctx, tile)
 			if err != nil || exists {
 				if err != nil {
@@ -686,6 +686,11 @@ func (task *Task) Download() error {
 			task.s3 = out
 		}
 		task.s3.tilePath = task.tilePath
+		if task.resume {
+			if err := task.s3.validateResumeTarget(task.ctx); err != nil {
+				return err
+			}
+		}
 	case "file", "mbtiles", "compactv2":
 		if task.File == "" {
 			file, err := task.outputPath()
@@ -745,6 +750,11 @@ func (task *Task) Download() error {
 	case "file":
 		if err := task.validateFileOutputSafety(); err != nil {
 			return err
+		}
+		if compact, err := compactIsDirectory(task.File); err != nil {
+			return err
+		} else if compact {
+			return fmt.Errorf("file output cannot write into an existing Compact v2 cache; keep output.format compactv2 or choose a new directory")
 		}
 		if err := task.validateFileResumeMetadata(); err != nil {
 			return err

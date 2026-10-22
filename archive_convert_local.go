@@ -352,6 +352,11 @@ func convertLocalArchive(ctx context.Context, input, output string, opts Archive
 		if err := archiveExportCompact(ctx, stage, stagedDir, metadata); err != nil {
 			return result, err
 		}
+		if existing && opts.Append {
+			if err := archivePreserveCompactFailures(ctx, destination, stagedDir); err != nil {
+				return result, err
+			}
+		}
 		if err := ctx.Err(); err != nil {
 			return result, err
 		}
@@ -701,6 +706,53 @@ func archiveWalkMB(ctx context.Context, input string, visit archiveVisit) (map[s
 	return metadata, nil
 }
 
+// A Compact cache stores its default repair report inside the directory that
+// append replaces. Preserve its bytes and original target binding on rebuild.
+func archivePreserveCompactFailures(ctx context.Context, original, staged string) error {
+	path := filepath.Join(original, "failures.json")
+	if err := validateOutputFilePath(original, path); err != nil {
+		return err
+	}
+	source, err := os.Open(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	defer source.Close()
+	info, err := source.Stat()
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() || info.Size() > maxFailureManifestBytes {
+		return fmt.Errorf("Compact repair report must be a regular JSON file of at most 64 MiB")
+	}
+	copyPath := filepath.Join(staged, "failures.json")
+	copy, err := os.OpenFile(copyPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, info.Mode().Perm())
+	if err != nil {
+		return err
+	}
+	err = archiveCopy(ctx, copy, io.LimitReader(source, maxFailureManifestBytes+1))
+	if err == nil {
+		err = copy.Chmod(info.Mode().Perm())
+	}
+	if closeErr := copy.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return err
+	}
+	manifest, err := LoadFailureManifest(copyPath)
+	if err != nil {
+		return fmt.Errorf("preserve Compact repair report: %w", err)
+	}
+	if target, ok := manifest.Target(); !ok || !sameFailureTarget(target, FailureTarget{Kind: "compactv2", Path: original}) {
+		return fmt.Errorf("Compact repair report belongs to a different output target")
+	}
+	return nil
+}
+
 // archiveExportCompact consumes the validated staging database without creating
 // individual tile files. The caller publishes the complete directory on success.
 func archiveExportCompact(ctx context.Context, input, output string, metadata map[string]string) (err error) {
@@ -828,6 +880,16 @@ func archivePublishDirectoryWithRename(staged, destination string, replace bool,
 			return err
 		}
 		return rename(staged, destination)
+	}
+	previous, err := os.Lstat(destination)
+	if err != nil {
+		return err
+	}
+	if !previous.IsDir() {
+		return fmt.Errorf("directory replacement requires an existing directory")
+	}
+	if err := os.Chmod(staged, previous.Mode().Perm()); err != nil {
+		return fmt.Errorf("preserve output directory permissions: %w", err)
 	}
 	// Keep the previous directory outside the conversion work directory. If
 	// both publication and rollback fail it must survive deferred work cleanup.

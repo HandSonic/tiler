@@ -3,12 +3,16 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"image"
 	"image/color"
 	"image/draw"
 	"image/png"
+	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/paulmach/orb/maptile"
 )
 
 func TestCompactConvertRoundTripAndAppend(t *testing.T) {
@@ -39,12 +43,32 @@ func TestCompactConvertRoundTripAndAppend(t *testing.T) {
 	if result, err := ConvertArchive(ctx, mbtiles, compact, ArchiveConvertOptions{OutputKind: "compactv2"}); err != nil || result.Tiles != 2 {
 		t.Fatalf("MBTiles to Compact v2: result=%+v err=%v", result, err)
 	}
+	// A partial download's repair report must survive replacing the cache
+	// directory during conversion append, with bytes and destination intact.
+	report := filepath.Join(compact, "failures.json")
+	manifest := newFailureManifest("world", PNG)
+	if err := manifest.SetTarget(FailureTarget{Kind: "compactv2", Path: compact}); err != nil {
+		t.Fatal(err)
+	}
+	if err := manifest.Record(maptile.Tile{Z: 8, X: 130, Y: 132}, "https://tiles.example/{z}/{x}/{y}", errors.New("missing tile")); err != nil {
+		t.Fatal(err)
+	}
+	if err := manifest.Save(report); err != nil {
+		t.Fatal(err)
+	}
+	originalReport, err := os.ReadFile(report)
+	if err != nil {
+		t.Fatal(err)
+	}
 	regionB := filepath.Join(root, "region-b")
 	archiveTestWrite(t, filepath.Join(regionB, "8", "127", "129.png"), green)
 	archiveTestWrite(t, filepath.Join(regionB, "8", "129", "131.png"), green)
 	// An existing conf.xml identifies the destination without -output-type.
 	if result, err := ConvertArchive(ctx, regionB, compact, ArchiveConvertOptions{Append: true}); err != nil || result.Tiles != 3 {
 		t.Fatalf("Compact v2 append: result=%+v err=%v", result, err)
+	}
+	if preserved, err := os.ReadFile(report); err != nil || !bytes.Equal(preserved, originalReport) {
+		t.Fatalf("append lost or changed the original repair report: %v", err)
 	}
 	expected := map[string][]byte{"8/127/129": red, "8/128/130": blue, "8/129/131": green}
 	checkTiles := func(path string) {
@@ -72,6 +96,16 @@ func TestCompactConvertRoundTripAndAppend(t *testing.T) {
 		t.Fatal("Compact v2 accepted a 2x2 tile")
 	}
 	checkTiles(compact)
+
+	archiveTestWrite(t, report, []byte("invalid repair report"))
+	if _, err := ConvertArchive(ctx, regionB, compact, ArchiveConvertOptions{Append: true}); err == nil {
+		t.Fatal("append discarded an unreadable repair report")
+	}
+	if preserved, err := os.ReadFile(report); err != nil || string(preserved) != "invalid repair report" {
+		t.Fatalf("failed append changed the original repair report: %v", err)
+	}
+	checkTiles(compact)
+	archiveTestWrite(t, report, originalReport)
 
 	pmtiles := filepath.Join(root, "combined.pmtiles")
 	if _, err := ConvertArchive(ctx, compact, pmtiles, ArchiveConvertOptions{}); err != nil {

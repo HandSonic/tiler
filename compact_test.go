@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"encoding/xml"
 	"errors"
 	"image"
 	"image/png"
@@ -17,7 +18,7 @@ func TestCompactEmptyResumeAndCorruptIndex(t *testing.T) {
 	ctx := context.Background()
 	root := filepath.Join(t.TempDir(), "cache")
 	metadata := map[string]string{
-		"format": PNG, "bounds": "-180,-85,180,85", "minzoom": "9", "maxzoom": "9",
+		"format": PNG, "bounds": "-180,-85,180,85", "minzoom": "9", "maxzoom": "30",
 		"json": `{"revision":7,"source":{"cached":true}}`,
 	}
 	cache, err := compactOpen(root, metadata, false)
@@ -123,5 +124,22 @@ func TestCompactEmptyResumeAndCorruptIndex(t *testing.T) {
 	}
 	if decoded["revision"] != float64(7) || decoded["pixel_scale"] != "512" {
 		t.Fatalf("typed metadata or actual image size lost: %s", data)
+	}
+	// At z30 an absolute 5e-10 resolution error accumulates across the global
+	// grid. Such a cache must not be imported as standard XYZ.
+	config, _, err := compactReadConfig(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config.Cache.LODs[30].Resolution += 5e-10
+	conf, err := xml.Marshal(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "conf.xml"), conf, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := compactReadConfig(root); err == nil {
+		t.Fatal("accepted a high-zoom grid with a displaced resolution")
 	}
 }

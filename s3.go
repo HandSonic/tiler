@@ -101,6 +101,19 @@ func newS3OutputForBucket(ctx context.Context, bucket string) (*s3Output, error)
 	}, nil
 }
 
+// Resume already needs read access. Check the cache marker once so loose
+// tiles cannot be appended beside bundles that readers will select instead.
+func (out *s3Output) validateResumeTarget(ctx context.Context) error {
+	_, compact, err := archiveS3Head(ctx, out, archiveS3Key(out.prefix, "conf.xml"))
+	if err != nil {
+		return err
+	}
+	if compact {
+		return fmt.Errorf("S3 target is a Compact cache; append with convert -output-type compactv2 or use a different prefix for loose tiles")
+	}
+	return nil
+}
+
 func (out *s3Output) saveContext(parent context.Context, tile Tile, format string) error {
 	key, err := out.tileKey(tile.T, format)
 	if err != nil {

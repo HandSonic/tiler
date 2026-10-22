@@ -137,9 +137,15 @@ func TestCompactDownloadCancelRepairResumeAppend(t *testing.T) {
 	viper.Set("output.resume", true)
 	resumed := NewTask(layers(coordinates[:2]...), tileMap)
 	t.Cleanup(resumed.Cancel)
-	if err := resumed.Download(); err != nil {
+	// Stored tiles must skip scheduling and its network rate limit entirely.
+	// Occupying the only worker slot proves this without timing assertions.
+	resumed.workers <- coordinates[0]
+	resumedDone := make(chan error, 1)
+	go func() { resumedDone <- resumed.Download() }()
+	if err := awaitRegressionError(t, resumedDone); err != nil {
 		t.Fatal(err)
 	}
+	<-resumed.workers
 	if resumed.Stats() != (DownloadStats{Skipped: 2}) || requests.Load() != 3 {
 		t.Fatalf("resume requested stored tiles: %+v, requests=%d", resumed.Stats(), requests.Load())
 	}
@@ -191,5 +197,25 @@ func TestCompactDownloadCancelRepairResumeAppend(t *testing.T) {
 	}
 	if bundles != 3 {
 		t.Fatalf("bundle count = %d, want 3", bundles)
+	}
+
+	// Changing output mode must not mix loose tiles into an existing cache,
+	// even if a separate failure report avoids the old target-kind check.
+	originalMetadata, err := os.ReadFile(filepath.Join(first.File, "metadata.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	viper.Set("output.format", "file")
+	viper.Set("output.append", false)
+	viper.Set("output.resume", false)
+	viper.Set("output.failure_file", filepath.Join(filepath.Dir(first.File), "loose-failures.json"))
+	loose := NewTask(layers(coordinates[0]), tileMap)
+	t.Cleanup(loose.Cancel)
+	if err := loose.Download(); err == nil {
+		t.Fatal("loose download accepted an existing Compact v2 cache")
+	}
+	unchanged, err := os.ReadFile(filepath.Join(first.File, "metadata.json"))
+	if err != nil || !bytes.Equal(unchanged, originalMetadata) || requests.Load() != 4 {
+		t.Fatalf("rejected output change modified cache metadata or requested tiles: %v", err)
 	}
 }

@@ -25,6 +25,10 @@ func TestS3ResumeChecksObjectsBeforeDownloading(t *testing.T) {
 	}))
 	defer source.Close()
 	destination := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/conf.xml") {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
 		switch r.Method {
 		case http.MethodHead:
 			atomic.AddInt32(&checks, 1)

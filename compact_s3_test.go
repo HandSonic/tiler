@@ -7,10 +7,14 @@ import (
 	"image/color"
 	"image/draw"
 	"image/png"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/spf13/viper"
 )
 
 func TestCompactS3RoundTripAppendAndUpload(t *testing.T) {
@@ -92,5 +96,25 @@ func TestCompactS3RoundTripAppendAndUpload(t *testing.T) {
 	}
 	if _, err := os.Stat(invalid); !os.IsNotExist(err) {
 		t.Fatal("invalid cache published an output")
+	}
+
+	// A direct loose-tile download cannot resume a Compact dataset: those
+	// new keys would be ignored when the prefix is read as Compact later.
+	configureRegressionOutput(t)
+	viper.Set("output.format", "s3")
+	viper.Set("output.append", true)
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(green)
+	}))
+	defer source.Close()
+	target := *out
+	target.bucket, target.prefix = "destination", "cache"
+	task := newRegressionTask(t, source.URL)
+	task.s3 = &target
+	if err := task.Download(); err == nil || !strings.Contains(err.Error(), "Compact") {
+		t.Fatalf("direct S3 append accepted a Compact prefix: %v", err)
+	}
+	if store.count("PUT") != puts {
+		t.Fatal("rejected direct S3 append changed the cache prefix")
 	}
 }

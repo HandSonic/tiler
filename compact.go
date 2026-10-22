@@ -154,7 +154,10 @@ func compactReadConfig(root string) (compactXML, string, error) {
 	}
 	for z, lod := range config.Cache.LODs {
 		expected := 2 * compactMercatorEdge / (float64(config.Cache.Width) * math.Exp2(float64(z)))
-		if lod.Level != z || !near(lod.Resolution, expected) {
+		// Keep resolution tolerance relative even at high zooms: a small
+		// absolute error accumulates across the global tile columns and rows.
+		matchesResolution := math.Abs(lod.Resolution-expected) <= math.Abs(expected)*1e-9
+		if lod.Level != z || !matchesResolution {
 			return config, "", fmt.Errorf("Compact v2 LOD resolutions must match global XYZ zoom levels starting at 0")
 		}
 	}
