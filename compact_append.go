@@ -175,18 +175,13 @@ func archiveAppendCompactLocal(ctx context.Context, input, destination, work str
 			return err
 		}
 		defer source.Close()
-		info, err := source.Stat()
-		if err != nil {
-			return err
-		}
-		copy, err := os.OpenFile(staged, os.O_WRONLY|os.O_CREATE|os.O_EXCL, info.Mode().Perm())
+		// Existing permissions are restored at publication, after the staged
+		// bundle has been reopened for writing and its new tiles validated.
+		copy, err := os.OpenFile(staged, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 		if err != nil {
 			return err
 		}
 		err = archiveCopy(ctx, copy, source)
-		if err == nil {
-			err = copy.Chmod(info.Mode().Perm())
-		}
 		if closeErr := copy.Close(); err == nil {
 			err = closeErr
 		}
@@ -242,6 +237,13 @@ func archivePublishCompactAppend(ctx context.Context, staged, destination string
 			return err
 		}
 		if err := os.MkdirAll(filepath.Dir(output), 0755); err != nil {
+			return err
+		}
+		if info, err := os.Lstat(output); err == nil {
+			if err := os.Chmod(path, info.Mode().Perm()); err != nil {
+				return err
+			}
+		} else if !os.IsNotExist(err) {
 			return err
 		}
 		return os.Rename(path, output)

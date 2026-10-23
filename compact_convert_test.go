@@ -11,6 +11,7 @@ import (
 	"image/png"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/paulmach/orb/maptile"
@@ -56,6 +57,14 @@ func TestCompactConvertRoundTripAndAppend(t *testing.T) {
 		}
 		previousFiles[i] = info
 	}
+	// On Unix, a writable parent permits replacing a read-only bundle. Its
+	// staged copy must stay writable until all incoming tiles have been merged.
+	readOnlyBundle := compactPath(compact, 8, 128, 130)
+	if runtime.GOOS != "windows" {
+		if err := os.Chmod(readOnlyBundle, 0444); err != nil {
+			t.Fatal(err)
+		}
+	}
 	// A partial download's repair report stays in place, with bytes and
 	// destination binding intact, while affected bundles are appended.
 	report := filepath.Join(compact, "failures.json")
@@ -81,6 +90,11 @@ func TestCompactConvertRoundTripAndAppend(t *testing.T) {
 	// An existing conf.xml identifies the destination without -output-type.
 	if result, err := ConvertArchive(ctx, regionB, compact, ArchiveConvertOptions{Append: true, Metadata: map[string]string{"name": "combined"}}); err != nil || result.Tiles != 2 || !result.Incremental {
 		t.Fatalf("Compact v2 append: result=%+v err=%v", result, err)
+	}
+	if runtime.GOOS != "windows" {
+		if info, err := os.Stat(readOnlyBundle); err != nil || info.Mode().Perm() != 0444 {
+			t.Fatalf("append changed the existing bundle permissions: %v: %v", info, err)
+		}
 	}
 	for i, path := range untouched {
 		info, err := os.Stat(path)
