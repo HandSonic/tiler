@@ -234,6 +234,50 @@ func compactReadMetadata(root string) (map[string]string, error) {
 	return metadata, nil
 }
 
+// Empty level directories do not establish tile dimensions. Stop at the first
+// file or nonempty level; even an empty or damaged bundle keeps the old grid.
+func compactHasStoredFiles(root string) (bool, error) {
+	base := filepath.Join(root, "_alllayers")
+	if err := validateOutputFilePath(base, base); err != nil {
+		return false, err
+	}
+	levels, err := os.Open(base)
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	defer levels.Close()
+	for {
+		entries, err := levels.ReadDir(1)
+		if err == io.EOF {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		if !entries[0].IsDir() {
+			return true, nil
+		}
+		level, err := os.Open(filepath.Join(base, entries[0].Name()))
+		if err != nil {
+			return false, err
+		}
+		files, readErr := level.ReadDir(1)
+		closeErr := level.Close()
+		if readErr != nil && readErr != io.EOF {
+			return false, readErr
+		}
+		if closeErr != nil {
+			return false, closeErr
+		}
+		if len(files) != 0 {
+			return true, nil
+		}
+	}
+}
+
 func compactOpen(root string, metadata map[string]string, resume bool) (*compactCache, error) {
 	format, err := archiveFormat(metadata["format"])
 	if err != nil {
@@ -260,12 +304,14 @@ func compactOpen(root string, metadata map[string]string, resume bool) (*compact
 			return nil, fmt.Errorf("cannot append to a mixed-format compact cache; convert to a new target")
 		}
 		tileSize, _ = strconv.Atoi(previous["pixel_scale"])
-		// Initialization writes usable metadata before any network request. If
-		// that request was cancelled, no bundle exists to fix the image size yet.
-		if _, statErr := os.Lstat(filepath.Join(root, "_alllayers")); os.IsNotExist(statErr) {
+		// Initialization or a failed first write can leave metadata and empty
+		// directories before any bundle establishes the image size.
+		populated, err := compactHasStoredFiles(root)
+		if err != nil {
+			return nil, err
+		}
+		if !populated {
 			tileSize = 0
-		} else if statErr != nil {
-			return nil, statErr
 		}
 	} else if entries, readErr := os.ReadDir(root); readErr == nil && len(entries) > 0 {
 		return nil, fmt.Errorf("existing Compact v2 output has no conf.xml; use a new empty directory")

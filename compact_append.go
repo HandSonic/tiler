@@ -150,12 +150,14 @@ func archiveAppendCompactLocal(ctx context.Context, input, destination, work str
 	if err != nil {
 		return result, err
 	}
-	if _, err := os.Lstat(filepath.Join(destination, "_alllayers")); os.IsNotExist(err) {
+	populated, err := compactHasStoredFiles(destination)
+	if err != nil {
+		return result, err
+	}
+	if !populated {
 		// Initialization writes a default config before the first download.
 		// With no bundles, the first incoming tile can still establish its size.
 		previous["pixel_scale"] = ""
-	} else if err != nil {
-		return result, err
 	}
 	if err := archiveValidateCompactFailures(destination); err != nil {
 		return result, err

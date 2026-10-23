@@ -34,6 +34,9 @@ func TestCompactEmptyResumeAndCorruptIndex(t *testing.T) {
 	if err := cache.Close(); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.MkdirAll(filepath.Join(root, "_alllayers", "L09"), 0755); err != nil {
+		t.Fatal(err)
+	}
 	cache, err = compactOpen(root, metadata, true)
 	if err != nil {
 		t.Fatal(err)

@@ -154,6 +154,28 @@ func TestCompactS3RoundTripAppendAndUpload(t *testing.T) {
 		t.Fatalf("retry must add only the missing bundle: result=%+v err=%v", result, err)
 	}
 
+	// S3 clients can create directory markers before the first actual tile.
+	// More markers than one listing page must not lock an empty cache to 256px.
+	for _, name := range []string{"metadata.json", "conf.cdi", "conf.xml"} {
+		store.put("destination/initialized/"+name, store.get("destination/cache/"+name))
+	}
+	for _, name := range []string{"_alllayers/", "_alllayers/L00/", "_alllayers/L08/"} {
+		store.put("destination/initialized/"+name, nil)
+		store.put("destination/cache/"+name, nil)
+	}
+	var large bytes.Buffer
+	if err := png.Encode(&large, image.NewRGBA(image.Rect(0, 0, 512, 512))); err != nil {
+		t.Fatal(err)
+	}
+	largeRegion := filepath.Join(root, "large-region")
+	archiveTestWrite(t, filepath.Join(largeRegion, "8", "130", "132.png"), large.Bytes())
+	if _, err := ConvertArchive(ctx, largeRegion, destination, ArchiveConvertOptions{S3: out, OutputKind: "compactv2", Append: true}); err == nil || !strings.Contains(err.Error(), "dimensions") {
+		t.Fatalf("directory markers hid established tile dimensions: %v", err)
+	}
+	if result, err := ConvertArchive(ctx, largeRegion, "s3://destination/initialized/", ArchiveConvertOptions{S3: out, OutputKind: "compactv2", Append: true}); err != nil || result.Tiles != 1 {
+		t.Fatalf("first tile could not establish dimensions through directory markers: result=%+v err=%v", result, err)
+	}
+
 	puts := store.count("PUT")
 	for _, overlapping := range []string{"s3://destination/cache/copy/", "s3://destination/"} {
 		if _, err := ConvertArchive(ctx, destination, overlapping, ArchiveConvertOptions{S3: out, OutputKind: "compactv2", Append: true}); err == nil || !strings.Contains(err.Error(), "overlap") {

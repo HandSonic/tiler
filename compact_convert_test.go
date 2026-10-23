@@ -149,6 +149,9 @@ func TestCompactConvertRoundTripAndAppend(t *testing.T) {
 	if err := cache.Close(); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.MkdirAll(filepath.Join(empty, "_alllayers", "L08"), 0755); err != nil {
+		t.Fatal(err)
+	}
 	if result, err := ConvertArchive(ctx, invalid, empty, ArchiveConvertOptions{Append: true}); err != nil || result.Tiles != 1 {
 		t.Fatalf("append into initialized cache: %+v: %v", result, err)
 	}
