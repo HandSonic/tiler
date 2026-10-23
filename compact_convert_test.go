@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/paulmach/orb/maptile"
@@ -87,6 +88,37 @@ func TestCompactConvertRoundTripAndAppend(t *testing.T) {
 	archiveTestWrite(t, filepath.Join(regionB, "8", "129", "131.png"), green)
 	archiveTestWrite(t, filepath.Join(regionB, "9", "130", "132.png"), green)
 	archiveTestWrite(t, filepath.Join(regionB, "metadata.json"), []byte(`{"bounds":[0,0,1,1],"custom_bool":"incoming"}`))
+	// Readers accept external level aliases, but modifying one in place must
+	// fail before a second, canonical bundle can duplicate its coordinates.
+	canonicalLevel := filepath.Join(compact, "_alllayers", "L08")
+	aliasLevel := filepath.Join(compact, "_alllayers", "L8")
+	if err := os.Rename(canonicalLevel, aliasLevel); err != nil {
+		t.Fatal(err)
+	}
+	beforeMetadata, err := os.ReadFile(filepath.Join(compact, "metadata.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ConvertArchive(ctx, regionB, compact, ArchiveConvertOptions{Append: true}); err == nil || !strings.Contains(err.Error(), "canonical") {
+		t.Fatalf("append accepted an external bundle path alias: %v", err)
+	}
+	previousMetadata, err := compactReadMetadata(compact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cache, err := compactOpen(ctx, compact, previousMetadata, true); err == nil {
+		cache.Close()
+		t.Fatal("direct download resume accepted an external bundle path alias")
+	}
+	if afterMetadata, err := os.ReadFile(filepath.Join(compact, "metadata.json")); err != nil || !bytes.Equal(afterMetadata, beforeMetadata) {
+		t.Fatalf("rejected append changed metadata: %v", err)
+	}
+	if tiles := archiveV2Snapshot(t, compact, ""); len(tiles) != 3 || !bytes.Equal(tiles["8/128/130"], blue) {
+		t.Fatal("rejected append changed old tiles or prevented reading an external cache")
+	}
+	if err := os.Rename(aliasLevel, canonicalLevel); err != nil {
+		t.Fatal(err)
+	}
 	// An existing conf.xml identifies the destination without -output-type.
 	if result, err := ConvertArchive(ctx, regionB, compact, ArchiveConvertOptions{Append: true, Metadata: map[string]string{"name": "combined"}}); err != nil || result.Tiles != 2 || !result.Incremental {
 		t.Fatalf("Compact v2 append: result=%+v err=%v", result, err)
@@ -156,7 +188,7 @@ func TestCompactConvertRoundTripAndAppend(t *testing.T) {
 	// A cancelled initial download can leave metadata but no bundle. Its
 	// default 256-pixel config must still permit the first actual 512 tile.
 	empty := filepath.Join(root, "initialized")
-	cache, err := compactOpen(empty, merged, true)
+	cache, err := compactOpen(ctx, empty, merged, true)
 	if err != nil {
 		t.Fatal(err)
 	}

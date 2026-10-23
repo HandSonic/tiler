@@ -835,6 +835,11 @@ func archiveS3ConvertToTiles(ctx context.Context, out *s3Output, input, prefix, 
 	if err != nil {
 		return result, err
 	}
+	// Explicit overrides must also replace old values, which otherwise win
+	// the merge. Coverage and output layout are derived again below.
+	if err := archiveApplyMetadata(old, opts.Metadata); err != nil {
+		return result, err
+	}
 	metadata, err = archiveS3MergeMetadata(old, metadata, oldExtent, newExtent, result.Format)
 	if err != nil {
 		return result, err

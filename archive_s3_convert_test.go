@@ -379,13 +379,17 @@ func TestS3ConversionLooseAppendPreservesOverlapAndRejectsLayoutChange(t *testin
 	a, b := filepath.Join(root, "a"), filepath.Join(root, "b")
 	red, blue := archiveTestPNG(t, color.RGBA{R: 255, A: 255}), archiveTestPNG(t, color.RGBA{B: 255, A: 255})
 	archiveTestWrite(t, filepath.Join(a, "2", "0", "1.png"), red)
+	archiveTestWrite(t, filepath.Join(a, "metadata.json"), []byte(`{"name":"original","custom_flag":true,"retained":9007199254740993}`))
 	archiveTestWrite(t, filepath.Join(b, "2", "0", "1.png"), blue)
 	archiveTestWrite(t, filepath.Join(b, "3", "6", "5.png"), blue)
 	const prefix = "s3://maps/tiles/"
 	if _, err := ConvertArchive(context.Background(), a, prefix, ArchiveConvertOptions{S3: out, OutputTilePath: "{z}/{y}/{x}.{format}"}); err != nil {
 		t.Fatal(err)
 	}
-	result, err := ConvertArchive(context.Background(), b, prefix, ArchiveConvertOptions{S3: out, Append: true, OutputTilePath: "{z}/{y}/{x}.{format}"})
+	result, err := ConvertArchive(context.Background(), b, prefix, ArchiveConvertOptions{
+		S3: out, Append: true, OutputTilePath: "{z}/{y}/{x}.{format}",
+		Metadata: map[string]string{"name": "combined", "json": `{"custom_flag":false}`, "bounds": "0,0,1,1", "minzoom": "3", "maxzoom": "3", "format": "jpg", "tile_path": defaultTilePath},
+	})
 	if err != nil || result.Tiles != 2 {
 		t.Fatalf("append result %+v: %v", result, err)
 	}
@@ -398,6 +402,17 @@ func TestS3ConversionLooseAppendPreservesOverlapAndRejectsLayoutChange(t *testin
 	}
 	if metadata["minzoom"] != "2" || metadata["maxzoom"] != "3" {
 		t.Fatalf("append metadata zoom range was narrowed: %+v", metadata)
+	}
+	if metadata["name"] != "combined" || metadata["format"] != PNG || metadata["tile_path"] != "{z}/{y}/{x}.{format}" {
+		t.Fatalf("explicit metadata lost descriptions or changed the output encoding/layout: %+v", metadata)
+	}
+	var extensions map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(metadata["json"]), &extensions); err != nil || string(extensions["custom_flag"]) != "false" || string(extensions["retained"]) != "9007199254740993" {
+		t.Fatalf("explicit metadata lost typed overrides or untouched old fields: %s: %v", metadata["json"], err)
+	}
+	bounds, err := archiveNumbers(metadata["bounds"], 4)
+	if err != nil || bounds[0] > -180 || bounds[2] < 135 {
+		t.Fatalf("explicit bounds hid retained or appended tiles: %v: %v", bounds, err)
 	}
 	before := store.count(http.MethodPut)
 	if _, err := ConvertArchive(context.Background(), b, prefix, ArchiveConvertOptions{S3: out, Append: true}); err == nil || store.count(http.MethodPut) != before {

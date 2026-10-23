@@ -28,6 +28,8 @@ func TestCompactDownloadCancelRepairResumeAppend(t *testing.T) {
 	configureRegressionOutput(t)
 	viper.Set("output.format", "compactv2")
 	viper.Set("output.name", "world")
+	viper.Set("output.resume", true)
+	viper.Set("output.failure_file", filepath.Join(viper.GetString("output.directory"), "world", "_alllayers", "L00", "errors.json"))
 	viper.Set("task.workers", 1)
 	viper.Set("task.timeout_seconds", 10)
 	coordinates := []maptile.Tile{
@@ -38,7 +40,7 @@ func TestCompactDownloadCancelRepairResumeAppend(t *testing.T) {
 	bodies := make(map[maptile.Tile][]byte)
 	responses := make(map[string][]byte)
 	for i, tile := range coordinates {
-		picture := image.NewRGBA(image.Rect(0, 0, 256, 256))
+		picture := image.NewRGBA(image.Rect(0, 0, 512, 512))
 		picture.Set(0, 0, color.RGBA{R: uint8(i + 1), A: 255})
 		var encoded bytes.Buffer
 		if err := png.Encode(&encoded, picture); err != nil {
@@ -48,6 +50,8 @@ func TestCompactDownloadCancelRepairResumeAppend(t *testing.T) {
 		responses[fmt.Sprintf("/%d/%d/%d", tile.Z, tile.X, tile.Y)] = encoded.Bytes()
 	}
 	var available atomic.Bool
+	var failFirst atomic.Bool
+	failFirst.Store(true)
 	var requests atomic.Int32
 	blocked := make(chan struct{})
 	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -55,6 +59,10 @@ func TestCompactDownloadCancelRepairResumeAppend(t *testing.T) {
 		body, ok := responses[r.URL.Path]
 		if !ok {
 			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		if failFirst.Swap(false) {
+			w.WriteHeader(http.StatusServiceUnavailable)
 			return
 		}
 		if r.URL.Path == "/8/128/13" && !available.Load() {
@@ -73,6 +81,16 @@ func TestCompactDownloadCancelRepairResumeAppend(t *testing.T) {
 			points[i] = tile.Bound().Center()
 		}
 		return []Layer{{Zoom: 8, URL: template, Collection: orb.Collection{points}}}
+	}
+	// The initial failure leaves metadata and a custom report beneath a level,
+	// but no bundle. That report must not lock the first actual tile to 256px.
+	initial := NewTask(layers(coordinates[0]), tileMap)
+	t.Cleanup(initial.Cancel)
+	if err := initial.Download(); err == nil || initial.Stats().Saved != 0 {
+		t.Fatalf("initial failure should not save a tile: stats=%+v err=%v", initial.Stats(), err)
+	}
+	if report, err := LoadFailureManifest(initial.failurePath); err != nil || report.Len() != 1 {
+		t.Fatalf("initial failure did not leave its nested report: %v", err)
 	}
 	first := NewTask(layers(coordinates[:2]...), tileMap)
 	t.Cleanup(first.Cancel)
@@ -117,7 +135,7 @@ func TestCompactDownloadCancelRepairResumeAppend(t *testing.T) {
 	if err := repair.Download(); err != nil {
 		t.Fatal(err)
 	}
-	if repair.File != first.File || repair.Stats() != (DownloadStats{Saved: 1}) || requests.Load() != 3 {
+	if repair.File != first.File || repair.Stats() != (DownloadStats{Saved: 1}) || requests.Load() != 4 {
 		t.Fatalf("repair changed target or downloaded extra tiles: %s, %+v, requests=%d", repair.File, repair.Stats(), requests.Load())
 	}
 	after, err := compactReadMetadata(first.File)
@@ -147,7 +165,7 @@ func TestCompactDownloadCancelRepairResumeAppend(t *testing.T) {
 		t.Fatal(err)
 	}
 	<-resumed.workers
-	if resumed.Stats() != (DownloadStats{Skipped: 2}) || requests.Load() != 3 {
+	if resumed.Stats() != (DownloadStats{Skipped: 2}) || requests.Load() != 4 {
 		t.Fatalf("resume requested stored tiles: %+v, requests=%d", resumed.Stats(), requests.Load())
 	}
 	viper.Set("output.append", true)
@@ -156,7 +174,7 @@ func TestCompactDownloadCancelRepairResumeAppend(t *testing.T) {
 	if err := appended.Download(); err != nil {
 		t.Fatal(err)
 	}
-	if appended.File != first.File || appended.Stats() != (DownloadStats{Saved: 1, Skipped: 1}) || requests.Load() != 4 {
+	if appended.File != first.File || appended.Stats() != (DownloadStats{Saved: 1, Skipped: 1}) || requests.Load() != 5 {
 		t.Fatalf("append did not preserve existing tiles: %+v, requests=%d", appended.Stats(), requests.Load())
 	}
 	seen := make(map[maptile.Tile]bool)
@@ -233,7 +251,7 @@ func TestCompactDownloadCancelRepairResumeAppend(t *testing.T) {
 		t.Fatalf("repair accepted a cache with a different encoding: %v", err)
 	}
 	unchangedReport, err := os.ReadFile(wrongPath)
-	if err != nil || !bytes.Equal(unchangedReport, originalReport) || wrongFormat.Len() != 1 || requests.Load() != 4 {
+	if err != nil || !bytes.Equal(unchangedReport, originalReport) || wrongFormat.Len() != 1 || requests.Load() != 5 {
 		t.Fatalf("rejected repair modified its report or requested tiles: %v", err)
 	}
 	unchangedMetadata, err := os.ReadFile(filepath.Join(first.File, "metadata.json"))
@@ -252,7 +270,7 @@ func TestCompactDownloadCancelRepairResumeAppend(t *testing.T) {
 		t.Fatal("loose download accepted an existing Compact v2 cache")
 	}
 	unchanged, err := os.ReadFile(filepath.Join(first.File, "metadata.json"))
-	if err != nil || !bytes.Equal(unchanged, originalMetadata) || requests.Load() != 4 {
+	if err != nil || !bytes.Equal(unchanged, originalMetadata) || requests.Load() != 5 {
 		t.Fatalf("rejected output change modified cache metadata or requested tiles: %v", err)
 	}
 }

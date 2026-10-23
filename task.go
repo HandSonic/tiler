@@ -748,7 +748,7 @@ func (task *Task) Download() error {
 			}
 		}
 		var err error
-		task.compact, err = compactOpen(task.File, metadata, task.resume)
+		task.compact, err = compactOpen(task.ctx, task.File, metadata, task.resume)
 		if err != nil {
 			return fmt.Errorf("initialize Compact v2: %w", err)
 		}

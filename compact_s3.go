@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -106,20 +105,24 @@ func archiveS3CompactHasObjects(ctx context.Context, out *s3Output, prefix strin
 	return len(page.Contents) != 0 || aws.ToBool(page.IsTruncated), nil
 }
 
-func archiveS3CompactHasData(ctx context.Context, out *s3Output, prefix string) (bool, error) {
-	found := errors.New("found Compact data")
-	err := archiveS3Walk(ctx, out, prefix, func(key, _ string, size int64) error {
-		// Empty directory markers do not establish tile dimensions. Every
-		// other object, including an empty or damaged bundle, still does.
-		if size == 0 && strings.HasSuffix(key, "/") {
+func archiveS3InspectCompactBundles(ctx context.Context, out *s3Output, prefix string) (bool, error) {
+	populated := false
+	err := archiveS3Walk(ctx, out, prefix, func(_, relative string, _ int64) error {
+		// List every bundle path before publication, without downloading the
+		// bodies. Canonical lookups alone cannot detect external path aliases.
+		if !strings.HasSuffix(relative, ".bundle") {
 			return nil
 		}
-		return found // Stop at the first data object instead of listing the cache.
+		_, allowed := compactCacheFile(relative)
+		if !allowed {
+			return fmt.Errorf("existing S3 Compact bundle path %q is not canonical; convert to a new Compact directory before appending", relative)
+		}
+		// Reports and directory markers do not establish dimensions, but an
+		// empty or damaged bundle must retain the old grid until repaired.
+		populated = true
+		return nil
 	})
-	if errors.Is(err, found) {
-		return true, nil
-	}
-	return false, err
+	return populated, err
 }
 
 func archiveS3ConvertToCompact(ctx context.Context, out *s3Output, input, prefix, work string, opts ArchiveConvertOptions) (ArchiveConvertResult, error) {
@@ -136,8 +139,8 @@ func archiveS3ConvertToCompact(ctx context.Context, out *s3Output, input, prefix
 	directory := filepath.Join(work, "s3-output-compact")
 	var result ArchiveConvertResult
 	if exists {
-		// Fetch only the fixed metadata files. Bundle keys come from validated
-		// incoming coordinates, never from a listing of the whole old cache.
+		// Fetch the fixed metadata files first. The preflight below lists names
+		// to reject aliases; old bundle bodies are fetched only for incoming tiles.
 		if err := os.Mkdir(directory, 0700); err != nil {
 			return zero, err
 		}
@@ -165,7 +168,7 @@ func archiveS3ConvertToCompact(ctx context.Context, out *s3Output, input, prefix
 		if err != nil {
 			return zero, err
 		}
-		populated, err := archiveS3CompactHasData(ctx, out, archiveS3Key(prefix, "_alllayers"))
+		populated, err := archiveS3InspectCompactBundles(ctx, out, prefix)
 		if err != nil {
 			return zero, err
 		}

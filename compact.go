@@ -234,51 +234,74 @@ func compactReadMetadata(root string) (map[string]string, error) {
 	return metadata, nil
 }
 
-// Empty level directories do not establish tile dimensions. Stop at the first
-// file or nonempty level; even an empty or damaged bundle keeps the old grid.
-func compactHasStoredFiles(root string) (bool, error) {
+// Inspect paths before modifying an existing cache. The reader accepts external
+// aliases, but writers use canonical paths and must not create a second bundle
+// for the same coordinates. Stream directory entries without reading tile data.
+// Only bundles establish dimensions; reports and empty directories do not.
+func compactInspectBundles(ctx context.Context, root string) (bool, error) {
 	base := filepath.Join(root, "_alllayers")
 	if err := validateOutputFilePath(base, base); err != nil {
 		return false, err
 	}
-	levels, err := os.Open(base)
-	if os.IsNotExist(err) {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	defer levels.Close()
-	for {
-		entries, err := levels.ReadDir(1)
-		if err == io.EOF {
-			return false, nil
+	populated := false
+	var inspect func(string) error
+	inspect = func(directory string) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		dir, err := os.Open(directory)
+		if directory == base && os.IsNotExist(err) {
+			return nil
 		}
 		if err != nil {
-			return false, err
+			return err
 		}
-		if !entries[0].IsDir() {
-			return true, nil
-		}
-		level, err := os.Open(filepath.Join(base, entries[0].Name()))
-		if err != nil {
-			return false, err
-		}
-		files, readErr := level.ReadDir(1)
-		closeErr := level.Close()
-		if readErr != nil && readErr != io.EOF {
-			return false, readErr
-		}
-		if closeErr != nil {
-			return false, closeErr
-		}
-		if len(files) != 0 {
-			return true, nil
+		defer dir.Close()
+		for {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			entries, err := dir.ReadDir(1)
+			if err == io.EOF {
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+			entry := entries[0]
+			path := filepath.Join(directory, entry.Name())
+			if entry.Type()&os.ModeSymlink != 0 {
+				return fmt.Errorf("compact cache must not contain symbolic links")
+			}
+			if entry.IsDir() {
+				if err := inspect(path); err != nil {
+					return err
+				}
+				continue
+			}
+			if !strings.HasSuffix(entry.Name(), ".bundle") {
+				continue
+			}
+			relative, err := filepath.Rel(root, path)
+			if err != nil {
+				return err
+			}
+			_, allowed := compactCacheFile(filepath.ToSlash(relative))
+			if !allowed || !entry.Type().IsRegular() {
+				return fmt.Errorf("existing Compact bundle path %q is not a canonical regular file; convert to a new Compact directory before appending", relative)
+			}
+			// Even an empty or damaged bundle keeps the established grid.
+			populated = true
 		}
 	}
+	err := inspect(base)
+	return populated, err
 }
 
-func compactOpen(root string, metadata map[string]string, resume bool) (*compactCache, error) {
+func compactOpen(ctx context.Context, root string, metadata map[string]string, resume bool) (*compactCache, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	format, err := archiveFormat(metadata["format"])
 	if err != nil {
 		return nil, err
@@ -306,7 +329,7 @@ func compactOpen(root string, metadata map[string]string, resume bool) (*compact
 		tileSize, _ = strconv.Atoi(previous["pixel_scale"])
 		// Initialization or a failed first write can leave metadata and empty
 		// directories before any bundle establishes the image size.
-		populated, err := compactHasStoredFiles(root)
+		populated, err := compactInspectBundles(ctx, root)
 		if err != nil {
 			return nil, err
 		}

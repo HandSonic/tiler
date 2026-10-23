@@ -664,7 +664,7 @@ func archiveWalkMB(ctx context.Context, input string, visit archiveVisit) (map[s
 	if err != nil {
 		return nil, err
 	}
-	rows, err := tx.QueryContext(ctx, "SELECT zoom_level,tile_column,tile_row,CASE WHEN length(CAST(tile_data AS BLOB))<=? THEN tile_data ELSE NULL END,length(CAST(tile_data AS BLOB)) FROM tiles", maxTileDataBytes)
+	rows, err := tx.QueryContext(ctx, "SELECT zoom_level,tile_column,tile_row,CASE WHEN length(CAST(tile_data AS BLOB))<=? THEN tile_data ELSE NULL END,coalesce(length(CAST(tile_data AS BLOB)),0) FROM tiles", maxTileDataBytes)
 	if err != nil {
 		return nil, err
 	}
@@ -720,7 +720,7 @@ func archiveValidateCompactFailures(original string) error {
 // archiveExportCompact consumes the validated staging database without creating
 // individual tile files. The caller publishes the complete directory on success.
 func archiveExportCompact(ctx context.Context, input, output string, metadata map[string]string) (err error) {
-	cache, err := compactOpen(output, metadata, false)
+	cache, err := compactOpen(ctx, output, metadata, false)
 	if err != nil {
 		return err
 	}

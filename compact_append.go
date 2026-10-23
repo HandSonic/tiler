@@ -150,7 +150,7 @@ func archiveAppendCompactLocal(ctx context.Context, input, destination, work str
 	if err != nil {
 		return result, err
 	}
-	populated, err := compactHasStoredFiles(destination)
+	populated, err := compactInspectBundles(ctx, destination)
 	if err != nil {
 		return result, err
 	}

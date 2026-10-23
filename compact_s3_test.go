@@ -73,6 +73,21 @@ func TestCompactS3RoundTripAppendAndUpload(t *testing.T) {
 	regionB := filepath.Join(root, "region-b")
 	archiveTestWrite(t, filepath.Join(regionB, "8", "127", "129.png"), green)
 	archiveTestWrite(t, filepath.Join(regionB, "8", "129", "131.png"), green)
+	// A late listing page can contain a noncanonical alias even after valid
+	// bundles were found. Reject it before changing any remote object.
+	for _, aliasKey := range []string{"destination/cache/_alllayers/L8/R0080C0080.bundle", "destination/cache/other.bundle"} {
+		store.put(aliasKey, store.get("destination/cache/_alllayers/L08/R0080C0080.bundle"))
+		putsBeforeAlias := store.count("PUT")
+		if _, err := ConvertArchive(ctx, regionB, destination, ArchiveConvertOptions{S3: out, OutputKind: "compactv2", Append: true}); err == nil || !strings.Contains(err.Error(), "canonical") {
+			t.Fatalf("S3 append accepted an external bundle path alias %s: %v", aliasKey, err)
+		}
+		if store.count("PUT") != putsBeforeAlias {
+			t.Fatal("rejected S3 append modified remote objects")
+		}
+		store.mu.Lock()
+		delete(store.objects, aliasKey)
+		store.mu.Unlock()
+	}
 	beforeAppend := store.totalRequests()
 	if result, err := ConvertArchive(ctx, regionB, destination, ArchiveConvertOptions{S3: out, OutputKind: "compactv2", Append: true}); err != nil || !result.Incremental || result.Tiles != 1 {
 		t.Fatalf("S3 Compact append: result=%+v err=%v", result, err)
@@ -163,6 +178,7 @@ func TestCompactS3RoundTripAppendAndUpload(t *testing.T) {
 		store.put("destination/initialized/"+name, nil)
 		store.put("destination/cache/"+name, nil)
 	}
+	store.put("destination/initialized/_alllayers/L00/errors.json", []byte(`{"failures":[]}`))
 	var large bytes.Buffer
 	if err := png.Encode(&large, image.NewRGBA(image.Rect(0, 0, 512, 512))); err != nil {
 		t.Fatal(err)

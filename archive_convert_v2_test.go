@@ -293,7 +293,26 @@ func TestArchiveV2AppendRefillsEmptyExistingTiles(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				_, err = db.Exec("UPDATE tiles SET tile_data=x''")
+				_, err = db.Exec("UPDATE tiles SET tile_data=NULL")
+				db.Close()
+				if err != nil {
+					t.Fatal(err)
+				}
+				// NULL is recoverable in an append destination, but remains an
+				// invalid tile in an incoming archive.
+				nullOutput := filepath.Join(t.TempDir(), "null.pmtiles")
+				if _, err := ConvertArchive(ctx, output, nullOutput, ArchiveConvertOptions{}); err == nil || !strings.Contains(err.Error(), "empty") {
+					t.Fatalf("NULL source tile was not rejected: %v", err)
+				}
+				if _, err := os.Stat(nullOutput); !os.IsNotExist(err) {
+					t.Fatalf("NULL source published an output: %v", err)
+				}
+				db, err = archiveOpenSQLite(output, false)
+				if err != nil {
+					t.Fatal(err)
+				}
+				// Keep one empty blob and one NULL for the recovery below.
+				_, err = db.Exec("UPDATE tiles SET tile_data=x'' WHERE zoom_level=0")
 				db.Close()
 				if err != nil {
 					t.Fatal(err)

@@ -21,7 +21,7 @@ func TestCompactEmptyResumeAndCorruptIndex(t *testing.T) {
 		"format": PNG, "bounds": "-180,-85,180,85", "minzoom": "9", "maxzoom": "30",
 		"json": `{"revision":7,"source":{"cached":true}}`,
 	}
-	cache, err := compactOpen(root, metadata, false)
+	cache, err := compactOpen(ctx, root, metadata, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,7 +37,7 @@ func TestCompactEmptyResumeAndCorruptIndex(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(root, "_alllayers", "L09"), 0755); err != nil {
 		t.Fatal(err)
 	}
-	cache, err = compactOpen(root, metadata, true)
+	cache, err = compactOpen(ctx, root, metadata, true)
 	if err != nil {
 		t.Fatal(err)
 	}
