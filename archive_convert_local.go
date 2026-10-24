@@ -182,6 +182,8 @@ func convertLocalArchive(ctx context.Context, input, output string, opts Archive
 	}
 	extent := archiveExtent{}
 	var metadata map[string]string
+	previousZoom := make(map[string]int)
+	var previousBounds string
 	importOne := func(path, pattern string, keepExisting bool) error {
 		if _, err := tx.ExecContext(ctx, "DELETE FROM input_seen"); err != nil {
 			return err
@@ -255,6 +257,25 @@ func convertLocalArchive(ctx context.Context, input, output string, opts Archive
 		if err != nil {
 			return err
 		}
+		if existingInput && (kind == "file" || kind == "mbtiles") {
+			// An incomplete download may declare coverage whose failed tiles
+			// will be repaired later. Capture it before metadata overrides.
+			previousBounds = incomingMetadata["bounds"]
+			for _, key := range []string{"minzoom", "maxzoom"} {
+				if value := incomingMetadata[key]; value != "" {
+					zoom, err := downloadMetadataZoom(value)
+					if err != nil {
+						return fmt.Errorf("invalid existing %s: %w", key, err)
+					}
+					previousZoom[key] = zoom
+				}
+			}
+			low, hasLow := previousZoom["minzoom"]
+			high, hasHigh := previousZoom["maxzoom"]
+			if hasLow && hasHigh && low > high {
+				return fmt.Errorf("invalid existing output zoom interval")
+			}
+		}
 		if existingInput && targetFormat == "" {
 			// Preserve the declared format even when all previous tiles were
 			// empty and therefore could not establish it from their bytes.
@@ -296,8 +317,17 @@ func convertLocalArchive(ctx context.Context, input, output string, opts Archive
 	}
 	delete(metadata, "tile_path")
 	if opts.Append && existing {
+		if bounds, err := archiveNumbers(previousBounds, 4); err == nil {
+			archiveUnionMetadataBounds(metadata, archiveExtent{west: bounds[0], south: bounds[1], east: bounds[2], north: bounds[3]})
+		}
 		archiveUnionMetadataBounds(metadata, extent)
 		delete(metadata, "center")
+	}
+	if low, ok := previousZoom["minzoom"]; ok && low < extent.minZ {
+		extent.minZ = low
+	}
+	if high, ok := previousZoom["maxzoom"]; ok && high > extent.maxZ {
+		extent.maxZ = high
 	}
 	if err := archiveCompleteMetadata(metadata, targetFormat, strings.TrimSuffix(filepath.Base(inputAbs), filepath.Ext(inputAbs)), extent); err != nil {
 		return result, err
@@ -590,9 +620,6 @@ func archiveWalkDirectoryCanonical(ctx context.Context, input, pattern string, r
 		}
 		if entry.Type()&os.ModeSymlink != 0 {
 			return fmt.Errorf("symlink is not supported in tile input: %s", path)
-		}
-		if entry.IsDir() {
-			return nil
 		}
 		relative, err := filepath.Rel(input, path)
 		if err != nil {

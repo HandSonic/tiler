@@ -398,7 +398,7 @@ func TestS3ConversionLooseAppendPreservesOverlapAndRejectsLayoutChange(t *testin
 	a, b := filepath.Join(root, "a"), filepath.Join(root, "b")
 	red, blue := archiveTestPNG(t, color.RGBA{R: 255, A: 255}), archiveTestPNG(t, color.RGBA{B: 255, A: 255})
 	archiveTestWrite(t, filepath.Join(a, "2", "0", "1.png"), red)
-	archiveTestWrite(t, filepath.Join(a, "metadata.json"), []byte(`{"name":"original","custom_flag":true,"retained":9007199254740993}`))
+	archiveTestWrite(t, filepath.Join(a, "metadata.json"), []byte(`{"name":"original","bounds":[-180,-80,180,80],"custom_flag":true,"retained":9007199254740993}`))
 	archiveTestWrite(t, filepath.Join(b, "2", "0", "1.png"), blue)
 	archiveTestWrite(t, filepath.Join(b, "3", "6", "5.png"), blue)
 	const prefix = "s3://maps/tiles/"
@@ -430,8 +430,8 @@ func TestS3ConversionLooseAppendPreservesOverlapAndRejectsLayoutChange(t *testin
 		t.Fatalf("explicit metadata lost typed overrides or untouched old fields: %s: %v", metadata["json"], err)
 	}
 	bounds, err := archiveNumbers(metadata["bounds"], 4)
-	if err != nil || bounds[0] > -180 || bounds[2] < 135 {
-		t.Fatalf("explicit bounds hid retained or appended tiles: %v: %v", bounds, err)
+	if err != nil || bounds[0] > -180 || bounds[1] > -80 || bounds[2] < 180 || bounds[3] < 80 {
+		t.Fatalf("explicit bounds shrank the existing region or hid appended tiles: %v: %v", bounds, err)
 	}
 	before := store.count(http.MethodPut)
 	if _, err := ConvertArchive(context.Background(), b, prefix, ArchiveConvertOptions{S3: out, Append: true}); err == nil || store.count(http.MethodPut) != before {

@@ -61,8 +61,8 @@ func TestConfigErrorsAndNoLayers(t *testing.T) {
 		task := NewTask(layers, TileMap{URL: "https://example.test/{z}/{x}/{y}", Format: format})
 		t.Cleanup(task.Cancel)
 		if format == " JPEG " {
-			if task.initErr != nil || task.TileMap.Format != format {
-				t.Fatalf("format validation changed an accepted encoding: %q, %v", task.TileMap.Format, task.initErr)
+			if task.initErr != nil || task.TileMap.Format != "jpeg" {
+				t.Fatalf("format normalization lost the JPEG alias: %q, %v", task.TileMap.Format, task.initErr)
 			}
 		} else if task.initErr == nil || !strings.Contains(task.initErr.Error(), "tm.format") {
 			t.Fatalf("invalid tm.format %q was not rejected during initialization: %v", format, task.initErr)

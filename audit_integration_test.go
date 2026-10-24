@@ -32,7 +32,7 @@ func TestAuditMBTilesPBFEncodingMatchesStandard(t *testing.T) {
 	viper.Set("output.gzip_pbf", false)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write(auditRealMVT()) }))
 	defer server.Close()
-	task := NewTask([]Layer{{Zoom: 0, URL: server.URL, Collection: orb.Collection{orb.Point{0, 0}}}}, TileMap{Name: "vector", Format: PBF, JSON: `{"vector_layers":[{"id":"test","fields":{}}]}`})
+	task := NewTask([]Layer{{Zoom: 0, URL: server.URL, Collection: orb.Collection{orb.Point{0, 0}}}}, TileMap{Name: "vector", Format: " PBF ", JSON: `{"vector_layers":[{"id":"test","fields":{}}]}`})
 	t.Cleanup(task.Cancel)
 	if err := task.Download(); err == nil || !strings.Contains(err.Error(), "gzip") {
 		t.Fatalf("uncompressed PBF MBTiles must be rejected: %v", err)

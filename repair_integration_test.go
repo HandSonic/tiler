@@ -154,6 +154,59 @@ func TestResumeRejectsDatabaseAliasWithActiveSidecar(t *testing.T) {
 	}
 }
 
+func TestRepairAfterConversionAppendKeepsZoomCoverage(t *testing.T) {
+	for _, kind := range []string{"file", "mbtiles"} {
+		t.Run(kind, func(t *testing.T) {
+			configureRegressionOutput(t)
+			viper.Set("output.format", kind)
+			body := tileDataPNG(t)
+			var available atomic.Bool
+			source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.HasPrefix(r.URL.Path, "/2/") && !available.Load() {
+					w.WriteHeader(http.StatusForbidden)
+					return
+				}
+				w.Write(body)
+			}))
+			defer source.Close()
+			layers := []Layer{
+				{Zoom: 0, Collection: orb.Collection{orb.Point{-90, 45}}},
+				{Zoom: 2, Collection: orb.Collection{orb.Point{-90, 45}}},
+			}
+			first := NewTask(layers, TileMap{Name: "world", Format: PNG, URL: source.URL + "/{z}/{x}/{y}"})
+			t.Cleanup(first.Cancel)
+			if err := first.Download(); err == nil {
+				t.Fatal("expected initial missing zoom 2 tile")
+			}
+			addition := t.TempDir()
+			archiveTestWrite(t, filepath.Join(addition, "1", "1", "1.png"), body)
+			if _, err := ConvertArchive(context.Background(), addition, first.File, ArchiveConvertOptions{Append: true, Metadata: map[string]string{"maxzoom": "1"}}); err != nil {
+				t.Fatal(err)
+			}
+			manifest, err := LoadFailureManifest(first.failurePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			available.Store(true)
+			repair, err := NewRepairTask(first.Layers, first.TileMap, manifest, first.failurePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(repair.Cancel)
+			if err := repair.Download(); err != nil {
+				t.Fatal(err)
+			}
+			if actual := repairIntegrationReadTile(t, kind, first.File, maptile.Tile{Z: 2, X: 1, Y: 1}); !bytes.Equal(actual, body) || manifest.Len() != 0 {
+				t.Fatalf("failed tile was not repaired: remaining=%d", manifest.Len())
+			}
+			metadata := appendReadMetadata(t, kind, first.File)
+			if metadata["minzoom"] != "0" || metadata["maxzoom"] != "2" {
+				t.Fatalf("append lost the repaired download's declared zoom range: %v", metadata)
+			}
+		})
+	}
+}
+
 func TestRepairLocalOutputOnlyRetriesManifestAndPreservesOriginalTarget(t *testing.T) {
 	for _, kind := range []string{"file", "mbtiles"} {
 		t.Run(kind, func(t *testing.T) {
@@ -700,6 +753,8 @@ func TestRepairManifestValidationDoesNotCreateOutput(t *testing.T) {
 		{"mbtiles", "../tiles.json-wal/errors.json"}, {"mbtiles", "../tiles.json-journal/errors.json"},
 		{"compactv2", "conf.xml/errors.json"}, {"compactv2", "CONF.CDI/errors.json"},
 		{"compactv2", "_ALLLAYERS/l00/r0000c0000.BUNDLE/errors.json"},
+		{"compactv2", "notes.bundle/errors.json"}, {"compactv2", "notes/archive.BUNDLE/errors.json"},
+		{"compactv2", "notes.bundle /errors.json"},
 		{"compactv2", "."}, {"file", ".."},
 	} {
 		t.Run(testcase.kind+"/"+testcase.report, func(t *testing.T) {

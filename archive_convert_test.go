@@ -485,6 +485,20 @@ func TestArchiveRejectsInvalidInputWithoutPublishing(t *testing.T) {
 			}
 		})
 	}
+	t.Run("directory at tile path", func(t *testing.T) {
+		input := t.TempDir()
+		archiveTestWrite(t, filepath.Join(input, "1", "0", "0.png"), archiveTestPNG(t, color.White))
+		if err := os.MkdirAll(filepath.Join(input, "1", "0", "1.png"), 0755); err != nil {
+			t.Fatal(err)
+		}
+		outputDir := t.TempDir()
+		if _, err := ConvertArchive(context.Background(), input, filepath.Join(outputDir, "map.mbtiles"), ArchiveConvertOptions{}); err == nil {
+			t.Fatal("directory at a tile path was silently omitted")
+		}
+		if entries, err := os.ReadDir(outputDir); err != nil || len(entries) != 0 {
+			t.Fatalf("rejected directory left output or temporary files: %v, %v", entries, err)
+		}
+	})
 }
 
 func TestArchiveExistingOutputAndOverwrite(t *testing.T) {

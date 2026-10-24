@@ -234,13 +234,14 @@ func (task *Task) setupFailureManifest() error {
 		}
 	} else if task.outformat == "compactv2" {
 		relative, err := filepath.Rel(target.Path, path)
-		if err == nil { // A report on another Windows volume is outside the cache.
+		if err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+			if err := validateRelativeTilePath(filepath.ToSlash(relative)); err != nil {
+				return fmt.Errorf("invalid failure manifest path inside Compact cache: %w", err)
+			}
 			parts := strings.Split(relative, string(filepath.Separator))
-			if len(parts) > 1 && strings.EqualFold(parts[0], "_alllayers") {
-				for _, parent := range parts[1 : len(parts)-1] {
-					if strings.EqualFold(filepath.Ext(parent), ".bundle") {
-						return fmt.Errorf("failure manifest cannot be inside a Compact bundle path")
-					}
+			for _, parent := range parts[:len(parts)-1] {
+				if strings.EqualFold(filepath.Ext(parent), ".bundle") {
+					return fmt.Errorf("failure manifest cannot be inside a Compact bundle path")
 				}
 			}
 		}

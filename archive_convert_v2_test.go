@@ -295,6 +295,29 @@ func TestArchiveV2AppendPreservesRegionAndUnionsMetadata(t *testing.T) {
 			}
 		})
 	}
+	t.Run("declared-bounds", func(t *testing.T) {
+		old, next := t.TempDir(), t.TempDir()
+		output := filepath.Join(t.TempDir(), "partial.mbtiles")
+		// The eastern area is declared for later repair, with only western
+		// tiles present. Actual tile bounds cannot restore that declaration.
+		archiveTestWrite(t, filepath.Join(old, "3", "0", "0.png"), red)
+		archiveTestWrite(t, filepath.Join(old, "metadata.json"), []byte(`{"bounds":"-180,60,180,85"}`))
+		if _, err := ConvertArchive(ctx, old, output, ArchiveConvertOptions{}); err != nil {
+			t.Fatal(err)
+		}
+		archiveTestWrite(t, filepath.Join(next, "4", "1", "0.png"), blue)
+		if _, err := ConvertArchive(ctx, next, output, ArchiveConvertOptions{Append: true, Metadata: map[string]string{"bounds": "-180,60,-135,85.1"}}); err != nil {
+			t.Fatal(err)
+		}
+		metadata, err := archiveWalkMB(ctx, output, func(int, uint32, uint32, []byte, string) error { return nil })
+		if err != nil {
+			t.Fatal(err)
+		}
+		bounds, err := archiveNumbers(metadata["bounds"], 4)
+		if err != nil || bounds[2] < 180 {
+			t.Fatalf("append override lost the declared eastern area: %v, %v", bounds, err)
+		}
+	})
 }
 
 func TestArchiveV2AppendRefillsEmptyExistingTiles(t *testing.T) {
@@ -601,6 +624,29 @@ func TestArchiveV2VectorRoundTripAndMetadataMerge(t *testing.T) {
 	}
 	if !strings.Contains(metadata["json"], `"custom_id":9007199254740993`) {
 		t.Fatalf("vector layer integer changed during MBTiles normalization: %s", metadata["json"])
+	}
+	// A partially downloaded archive can declare levels not yet present in
+	// tiles. Append must retain both the archive and vector layer coverage.
+	db, err := archiveOpenSQLite(mbtiles, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	layerJSON := strings.Replace(metadata["json"], `"id":"test"`, `"id":"test","maxzoom":2`, 1)
+	_, err = db.Exec("UPDATE metadata SET value=CASE name WHEN 'maxzoom' THEN '2' WHEN 'json' THEN ? END WHERE name IN ('maxzoom','json')", layerJSON)
+	db.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	archiveTestWrite(t, filepath.Join(input, "metadata.json"), []byte(layerJSON))
+	if _, err := convertLocalArchive(context.Background(), input, mbtiles, ArchiveConvertOptions{Append: true}); err != nil {
+		t.Fatal(err)
+	}
+	metadata = appendReadMetadata(t, "mbtiles", mbtiles)
+	if err := json.Unmarshal([]byte(metadata["json"]), &tileJSON); err != nil {
+		t.Fatal(err)
+	}
+	if metadata["maxzoom"] != "2" || tileJSON["vector_layers"].([]interface{})[0].(map[string]interface{})["maxzoom"] != float64(2) {
+		t.Fatalf("append narrowed pending vector coverage: %v", metadata)
 	}
 	a := map[string]string{"format": "pbf", "json": `{"vector_layers":[{"id":"roads","fields":{"name":"String"},"minzoom":5,"maxzoom":8,"custom_id":9007199254740993}]}`}
 	b := map[string]string{"format": "pbf", "vector_layers": `[{"id":"roads","fields":{"class":"String"},"minzoom":2,"maxzoom":10,"custom_id":7,"description":"new description","custom_added":{"id":9007199254740993}},{"id":"water","fields":{}}]`}

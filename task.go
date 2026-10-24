@@ -93,6 +93,7 @@ func newDownloadTaskContext(parent context.Context, layers []Layer, m TileMap, m
 	if len(layers) == 0 {
 		return nil
 	}
+	m.Format = strings.ToLower(strings.TrimSpace(m.Format))
 	layers = append([]Layer(nil), layers...)
 	id, _ := shortid.Generate()
 
@@ -111,7 +112,7 @@ func newDownloadTaskContext(parent context.Context, layers []Layer, m TileMap, m
 		task.initErr = err
 		return &task
 	}
-	if err := validateFailureFormat(strings.ToLower(strings.TrimSpace(m.Format))); err != nil {
+	if err := validateFailureFormat(m.Format); err != nil {
 		task.initErr = fmt.Errorf("tm.format: %w", err)
 		return &task
 	}

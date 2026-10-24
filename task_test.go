@@ -56,9 +56,9 @@ func TestTaskDownloadS3(t *testing.T) {
 			}))
 			defer source.Close()
 			type upload struct {
-				path, contentType, encoding string
-				body                        []byte
-				err                         error
+				path, contentType, encoding, format string
+				body                                []byte
+				err                                 error
 			}
 			uploads := make(chan upload, 2)
 			entered := make(chan struct{}, 2)
@@ -69,7 +69,7 @@ func TestTaskDownloadS3(t *testing.T) {
 			sink := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				data, err := io.ReadAll(r.Body)
 				select {
-				case uploads <- upload{r.URL.Path, r.Header.Get("Content-Type"), r.Header.Get("Content-Encoding"), data, err}:
+				case uploads <- upload{r.URL.Path, r.Header.Get("Content-Type"), r.Header.Get("Content-Encoding"), r.Header.Get("X-Amz-Meta-Tiler-Format"), data, err}:
 				default:
 					t.Errorf("unexpected extra S3 upload: %s", r.URL.Path)
 					w.WriteHeader(http.StatusBadRequest)
@@ -83,7 +83,9 @@ func TestTaskDownloadS3(t *testing.T) {
 			defer sink.Close()
 			defer releaseAll()
 			viper.Set("output.s3.endpoint", sink.URL)
-			task := taskForTest(source.URL, format, orb.Collection{orb.Point{-135, 45}, orb.Point{45, -45}})
+			// Accepted configuration spelling must agree with the object key,
+			// encoding headers and identity marker written to S3.
+			task := taskForTest(source.URL, " "+strings.ToUpper(format)+" ", orb.Collection{orb.Point{-135, 45}, orb.Point{45, -45}})
 			defer task.Cancel()
 			result := make(chan error, 1)
 			go func() { result <- task.Download() }()
@@ -123,6 +125,9 @@ func TestTaskDownloadS3(t *testing.T) {
 				delete(wantPaths, got.path)
 				if got.contentType != contentType {
 					t.Errorf("Content-Type = %q; want %q", got.contentType, contentType)
+				}
+				if got.format != format {
+					t.Errorf("tile format marker = %q; want %q", got.format, format)
 				}
 				data := got.body
 				if format == PBF {

@@ -837,10 +837,13 @@ func archiveS3ConvertToTiles(ctx context.Context, out *s3Output, input, prefix, 
 		return result, err
 	}
 	// Explicit overrides must also replace old values, which otherwise win
-	// the merge. Coverage and output layout are derived again below.
+	// the merge. Preserve the old region declaration; the staged incoming
+	// metadata already contains any requested bounds for the merge below.
+	previousBounds := old["bounds"]
 	if err := archiveApplyMetadata(old, opts.Metadata); err != nil {
 		return result, err
 	}
+	old["bounds"] = previousBounds
 	metadata, err = archiveS3MergeMetadata(old, metadata, oldExtent, newExtent, result.Format)
 	if err != nil {
 		return result, err
