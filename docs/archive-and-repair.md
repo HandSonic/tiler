@@ -64,6 +64,8 @@ Windows PowerShell 可直接使用示例中的单引号模板；将 `./tiler` �
 
 向已有本地文件目录或 MBTiles 追加时，也保留旧元数据声明的层级及区域范围，包括尚待 `repair` 补回的失败瓦片；显式 `-metadata` 不会缩小这部分覆盖范围。S3 散瓦片转换同样保留旧声明的区域范围。PMTiles 的层级范围仍按重建时实际存在的瓦片计算。
 
+显式提供的 `bounds` 必须是有效的经纬度范围；无法解析、超出地理范围或端点顺序颠倒时，转换和追加均报错，不会在范围合并时忽略该错误。
+
 已有 Compact 目标的 `-append` 按新输入涉及的 bundle 合并，旧非空瓦片优先；本地不重写未改变的包，S3 只下载涉及的包并上传改变的包和元数据。完成提示报告本次新增数量。暂存成功后先扩展元数据，再逐包发布；发布中断可能已完成部分追加。详细空间需求和边界见 [Compact v2 说明](compact-v2.md)。
 
 `convert` 不持久化构建进度，也不保存跨进程 S3 分段状态。重新执行 MBTiles/PMTiles 归档转换需要重新构建；散瓦片或已有 Compact 目标可用 `-append` 保留已完成的非空瓦片。不要让多个进程同时修改同一个目标。
@@ -199,6 +201,8 @@ timeout_seconds = 60
 | `s3` | `output.directory/地图名-zmin-max.ID.failures.json`，日志显示实际路径 |
 
 也可在 `[output]` 设置 `failure_file = "output/failures.json"`。路径必须以 `.json` 结尾，不能占用输出自身或其父目录，也不能把元数据文件、MBTiles 数据库及其 `-wal`/`-journal`、Compact 配置或 bundle 当成报告目录。普通 Compact 层目录内的 `errors.json` 和缓存外的报告仍可使用，检查在创建输出前完成。S3 的清单保存在本地，不作为对象上传。
+
+自动生成的清单文件名也会在下载瓦片前检查长度，包括 MBTiles 的报告后缀和 Unix 文件系统上的 UTF-8 字节数。超限时应缩短 `tm.name` / `output.name`，或显式设置较短的 `output.failure_file`。
 
 ```sh
 ./tiler repair -c conf.toml -failures output/basemap.mbtiles.failures.json

@@ -1023,6 +1023,13 @@ func archiveMergeMetadata(existing, incoming map[string]string) (map[string]stri
 }
 
 func archiveApplyMetadata(metadata, overrides map[string]string) error {
+	// Validate explicit coverage before append merges can replace it with the
+	// old or actual extent and hide an invalid user-supplied value.
+	if value := overrides["bounds"]; value != "" {
+		if _, err := archiveMetadataBounds(value); err != nil {
+			return err
+		}
+	}
 	for key, value := range overrides {
 		if key == "json" && strings.TrimSpace(value) != "" {
 			merged, err := mergeArchiveJSON(value, metadata[key])

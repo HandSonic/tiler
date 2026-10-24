@@ -16,7 +16,6 @@ import (
 	"os"
 	"path"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
@@ -943,7 +942,6 @@ func archiveS3MergeMetadata(old, incoming map[string]string, before, added archi
 	if err := archiveCompleteMetadata(metadata, format, metadata["name"], combined); err != nil {
 		return nil, err
 	}
-	metadata["minzoom"], metadata["maxzoom"] = strconv.Itoa(combined.minZ), strconv.Itoa(combined.maxZ)
 	return metadata, nil
 }
 

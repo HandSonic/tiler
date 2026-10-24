@@ -120,23 +120,32 @@ func TestCompactConvertRoundTripAndAppend(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Case variants and misplaced bundles must not be silently omitted from
-	// conversion/upload or mistaken for an empty cache during resume.
+	// conversion/upload or mistaken for an empty cache during resume. Metadata
+	// aliases must also fail before their declarations can be discarded.
 	bundle := untouched[0]
-	for _, alias := range []string{strings.TrimSuffix(bundle, ".bundle") + ".BUNDLE", filepath.Join(compact, "other.bundle")} {
-		if err := os.Rename(bundle, alias); err != nil {
+	for _, paths := range []struct{ original, alias string }{
+		{bundle, strings.TrimSuffix(bundle, ".bundle") + ".BUNDLE"},
+		{bundle, filepath.Join(compact, "other.bundle")},
+		{filepath.Join(compact, "metadata.json"), filepath.Join(compact, "METADATA.JSON")},
+	} {
+		alias := paths.alias
+		if err := os.Rename(paths.original, alias); err != nil {
 			t.Fatal(err)
 		}
 		if result, err := ConvertArchive(ctx, compact, filepath.Join(root, "invalid-path.mbtiles"), ArchiveConvertOptions{}); err == nil {
-			t.Fatalf("conversion silently omitted bundle %s: %+v", alias, result)
+			t.Fatalf("conversion silently omitted cache path %s: %+v", alias, result)
 		}
 		if _, err := planArchiveUploads(ctx, "cache", []string{compact}); err == nil {
-			t.Fatalf("upload silently omitted bundle %s", alias)
+			t.Fatalf("upload silently omitted cache path %s", alias)
 		}
 		if cache, err := compactOpen(ctx, compact, previousMetadata, true); err == nil {
 			cache.Close()
-			t.Fatalf("resume ignored bundle %s", alias)
+			t.Fatalf("resume ignored cache path %s", alias)
 		}
-		if err := os.Rename(alias, bundle); err != nil {
+		if _, err := ConvertArchive(ctx, regionB, compact, ArchiveConvertOptions{Append: true}); err == nil {
+			t.Fatalf("append ignored cache path alias %s", alias)
+		}
+		if err := os.Rename(alias, paths.original); err != nil {
 			t.Fatal(err)
 		}
 	}

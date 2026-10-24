@@ -35,11 +35,24 @@ func TestCompactS3RoundTripAppendAndUpload(t *testing.T) {
 	store.put("source/tiles/8/128/130.png", blue)
 	store.put("source/tiles/7/64/65.png", blue) // Unrelated old bundle.
 	const destination = "s3://destination/cache/"
+	// A failed marker must leave an empty prefix; once the marker is present,
+	// interrupted metadata initialization must also remain retryable.
+	for _, name := range []string{"conf.xml", "metadata.json"} {
+		request := "PUT destination/cache/" + name
+		store.fail(request, http.StatusForbidden)
+		if _, err := ConvertArchive(ctx, "s3://source/tiles/", destination, ArchiveConvertOptions{S3: out, OutputKind: "compactv2", Append: true}); err == nil {
+			t.Fatalf("initial conversion ignored a failed %s upload", name)
+		}
+		store.fail(request, 0)
+	}
+	if len(store.get("destination/cache/conf.xml")) == 0 {
+		t.Fatal("interrupted metadata initialization lost the cache marker")
+	}
 	// The first transfer must also be retryable after some bundles arrive.
 	// Fail the second bundle, leaving the completed L07 bundle in place.
 	firstFailure := "PUT destination/cache/_alllayers/L08/R0080C0000.bundle"
 	store.fail(firstFailure, http.StatusForbidden)
-	if _, err := ConvertArchive(ctx, "s3://source/tiles/", destination, ArchiveConvertOptions{S3: out, OutputKind: "compactv2"}); err == nil {
+	if _, err := ConvertArchive(ctx, "s3://source/tiles/", destination, ArchiveConvertOptions{S3: out, OutputKind: "compactv2", Append: true}); err == nil {
 		t.Fatal("initial conversion ignored a failed bundle upload")
 	}
 	for _, name := range []string{"metadata.json", "conf.cdi", "conf.xml", "_alllayers/L07/R0000C0000.bundle"} {
@@ -75,14 +88,18 @@ func TestCompactS3RoundTripAppendAndUpload(t *testing.T) {
 	archiveTestWrite(t, filepath.Join(regionB, "8", "129", "131.png"), green)
 	// A late listing page can contain a noncanonical alias even after valid
 	// bundles were found. Reject it before changing any remote object.
-	for _, aliasKey := range []string{"destination/cache/_alllayers/L8/R0080C0080.bundle", "destination/cache/other.bundle", "destination/cache/_alllayers/L08/R0080C0080.BUNDLE"} {
-		store.put(aliasKey, store.get("destination/cache/_alllayers/L08/R0080C0080.bundle"))
+	for _, aliasKey := range []string{"destination/cache/_alllayers/L8/R0080C0080.bundle", "destination/cache/other.bundle", "destination/cache/_alllayers/L08/R0080C0080.BUNDLE", "destination/cache/METADATA.JSON"} {
+		original := "destination/cache/_alllayers/L08/R0080C0080.bundle"
+		if strings.HasSuffix(aliasKey, "/METADATA.JSON") {
+			original = "destination/cache/metadata.json"
+		}
+		store.put(aliasKey, store.get(original))
 		putsBeforeAlias := store.count("PUT")
 		if _, err := ConvertArchive(ctx, regionB, destination, ArchiveConvertOptions{S3: out, OutputKind: "compactv2", Append: true}); err == nil || !strings.Contains(err.Error(), "canonical") {
-			t.Fatalf("S3 append accepted an external bundle path alias %s: %v", aliasKey, err)
+			t.Fatalf("S3 append accepted an external cache path alias %s: %v", aliasKey, err)
 		}
 		if _, err := ConvertArchive(ctx, destination, filepath.Join(root, "alias-input.mbtiles"), ArchiveConvertOptions{S3: out}); err == nil {
-			t.Fatalf("S3 conversion silently omitted an invalid bundle path %s", aliasKey)
+			t.Fatalf("S3 conversion silently omitted an invalid cache path %s", aliasKey)
 		}
 		if store.count("PUT") != putsBeforeAlias {
 			t.Fatal("rejected S3 append modified remote objects")

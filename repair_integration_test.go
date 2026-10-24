@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -771,6 +772,41 @@ func TestRepairManifestValidationDoesNotCreateOutput(t *testing.T) {
 			}
 			if _, err := os.Stat(parent); !os.IsNotExist(err) {
 				t.Fatalf("invalid report configuration created output directories: %v", err)
+			}
+		})
+	}
+	for _, testcase := range []struct {
+		name, kind, value string
+		unixOnly          bool
+	}{
+		{"s3-ascii", "s3", strings.Repeat("a", maxWindowsComponentUnits), false},
+		{"s3-unicode", "s3", strings.Repeat("中", maxWindowsComponentUnits/2), true},
+		{"mbtiles-suffix", "mbtiles", strings.Repeat("a", maxWindowsComponentUnits-len(".mbtiles.failures.json")+1), false},
+	} {
+		t.Run("default-report-name/"+testcase.name, func(t *testing.T) {
+			if testcase.unixOnly && runtime.GOOS == "windows" {
+				t.Skip("Windows permits this UTF-16 filename length")
+			}
+			dir := configureTaskTest(t, testcase.kind)
+			if testcase.kind == "mbtiles" {
+				viper.Set("output.name", testcase.value)
+			}
+			var requests atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests.Add(1)
+				w.WriteHeader(http.StatusForbidden)
+			}))
+			defer server.Close()
+			viper.Set("output.s3.endpoint", server.URL)
+			task := NewTask([]Layer{{Zoom: 0, Collection: orb.Collection{orb.Point{0, 0}}}}, TileMap{
+				Name: testcase.value, Format: PNG, URL: server.URL,
+			})
+			t.Cleanup(task.Cancel)
+			if err := task.Download(); err == nil || !strings.Contains(err.Error(), "output.failure_file") {
+				t.Fatalf("invalid default report filename was not rejected: %v", err)
+			}
+			if _, err := os.Stat(dir); !os.IsNotExist(err) || requests.Load() != 0 {
+				t.Fatalf("invalid report filename created output or used the network: %v, requests=%d", err, requests.Load())
 			}
 		})
 	}

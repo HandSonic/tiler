@@ -99,16 +99,22 @@ func TestAuditArchiveAppendRejectsUnreadableMetadataBeforeTiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = convertLocalArchive(context.Background(), second, destination, ArchiveConvertOptions{Append: true, Metadata: map[string]string{"description": strings.Repeat("\x00", 3<<20)}})
-	if err == nil {
-		t.Fatal("append published JSON metadata larger than the reader can accept")
-	}
-	after, readErr := os.ReadFile(filepath.Join(destination, "metadata.json"))
-	if readErr != nil || string(before) != string(after) {
-		t.Fatalf("metadata changed before size preflight: %v", readErr)
-	}
-	if _, err := os.Stat(filepath.Join(destination, "1", "1", "1.png")); !os.IsNotExist(err) {
-		t.Fatalf("new tile was written before metadata size validation: %v", err)
+	for _, metadata := range []map[string]string{
+		{"description": strings.Repeat("\x00", 3<<20)},
+		{"bounds": "invalid"},
+		{"bounds": "20,10,10,20"},
+	} {
+		_, err = convertLocalArchive(context.Background(), second, destination, ArchiveConvertOptions{Append: true, Metadata: metadata})
+		if err == nil {
+			t.Fatal("append accepted invalid or unreadable explicit metadata")
+		}
+		after, readErr := os.ReadFile(filepath.Join(destination, "metadata.json"))
+		if readErr != nil || string(before) != string(after) {
+			t.Fatalf("metadata changed before preflight: %v", readErr)
+		}
+		if _, err := os.Stat(filepath.Join(destination, "1", "1", "1.png")); !os.IsNotExist(err) {
+			t.Fatalf("new tile was written before metadata validation: %v", err)
+		}
 	}
 }
 

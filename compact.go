@@ -270,6 +270,11 @@ func compactInspectBundles(ctx context.Context, root string) (bool, error) {
 			}
 			entry := entries[0]
 			path := filepath.Join(directory, entry.Name())
+			if directory == root {
+				if metadata, _ := compactCacheFile(strings.ToLower(entry.Name())); metadata && entry.Name() != strings.ToLower(entry.Name()) {
+					return fmt.Errorf("Compact metadata path %q must use its canonical lowercase name", entry.Name())
+				}
+			}
 			if entry.Type()&os.ModeSymlink != 0 {
 				return fmt.Errorf("compact cache must not contain symbolic links")
 			}
@@ -690,6 +695,11 @@ func archiveWalkCompact(ctx context.Context, root string, visit archiveVisit) (m
 		}
 		if entry.Type()&os.ModeSymlink != 0 {
 			return fmt.Errorf("compact cache must not contain symbolic links")
+		}
+		if path != root && filepath.Dir(path) == filepath.Clean(root) {
+			if metadata, _ := compactCacheFile(strings.ToLower(entry.Name())); metadata && entry.Name() != strings.ToLower(entry.Name()) {
+				return fmt.Errorf("Compact metadata path %q must use its canonical lowercase name", entry.Name())
+			}
 		}
 		// The cache directory itself can have any name, including .bundle.
 		if path == root || !strings.EqualFold(filepath.Ext(entry.Name()), ".bundle") {

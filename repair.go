@@ -5,12 +5,17 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/paulmach/orb/maptile"
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/viper"
 )
+
+// Common Unix filesystems limit each filename component in bytes; Windows
+// counts UTF-16 units instead, checked by validateRelativeTilePath.
+const maxUnixFilenameBytes = 255
 
 func NewRepairTask(layers []Layer, tm TileMap, manifest *FailureManifest, manifestPath string) (*Task, error) {
 	return NewRepairTaskContext(context.Background(), layers, tm, manifest, manifestPath)
@@ -184,6 +189,13 @@ func (task *Task) setupFailureManifest() error {
 				task.failurePath = task.File + ".failures.json"
 			default:
 				task.failurePath = filepath.Join(viper.GetString("output.directory"), fmt.Sprintf("%s-z%d-%d.%s.failures.json", safeOutputName(task.Name), task.Min, task.Max, task.ID))
+			}
+			name := filepath.Base(task.failurePath)
+			if err := validateRelativeTilePath(name); err != nil {
+				return fmt.Errorf("invalid default failure manifest filename; shorten tm.name/output.name or set output.failure_file: %w", err)
+			}
+			if runtime.GOOS != "windows" && len(name) > maxUnixFilenameBytes {
+				return fmt.Errorf("default failure manifest filename exceeds %d bytes; shorten tm.name/output.name or set output.failure_file", maxUnixFilenameBytes)
 			}
 		}
 	}

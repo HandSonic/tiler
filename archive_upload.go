@@ -104,8 +104,14 @@ func UploadArchives(ctx context.Context, out *s3Output, inputs []string, opts Ar
 	}
 	if opts.compactMetadataFirst {
 		sort.SliceStable(files, func(i, j int) bool {
-			left, _ := compactCacheFile(filepath.Base(files[i].Path))
-			right, _ := compactCacheFile(filepath.Base(files[j].Path))
+			leftName, rightName := filepath.Base(files[i].Path), filepath.Base(files[j].Path)
+			// Publish the detection marker first so even interrupted metadata
+			// initialization can be retried as an existing Compact cache.
+			if (leftName == "conf.xml") != (rightName == "conf.xml") {
+				return leftName == "conf.xml"
+			}
+			left, _ := compactCacheFile(leftName)
+			right, _ := compactCacheFile(rightName)
 			return left && !right
 		})
 	}

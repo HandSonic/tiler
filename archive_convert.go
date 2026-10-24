@@ -393,12 +393,9 @@ func archiveCompleteMetadata(metadata map[string]string, format, name string, ex
 	}
 	bounds := []float64{extent.west, extent.south, extent.east, extent.north}
 	if text := metadata["bounds"]; text != "" {
-		parsed, err := archiveNumbers(text, 4)
+		parsed, err := archiveMetadataBounds(text)
 		if err != nil {
-			return fmt.Errorf("invalid bounds metadata: %w", err)
-		}
-		if parsed[0] < -180 || parsed[2] > 180 || parsed[1] < -90 || parsed[3] > 90 || parsed[0] > parsed[2] || parsed[1] > parsed[3] {
-			return fmt.Errorf("bounds metadata is outside the geographic range")
+			return err
 		}
 		if parsed[0] != parsed[2] && parsed[1] != parsed[3] {
 			bounds = parsed
@@ -439,6 +436,17 @@ func archiveCompleteMetadata(metadata map[string]string, format, name string, ex
 		metadata["json"] = string(encoded)
 	}
 	return nil
+}
+
+func archiveMetadataBounds(text string) ([]float64, error) {
+	bounds, err := archiveNumbers(text, 4)
+	if err != nil {
+		return nil, fmt.Errorf("invalid bounds metadata: %w", err)
+	}
+	if bounds[0] < -180 || bounds[2] > 180 || bounds[1] < -90 || bounds[3] > 90 || bounds[0] > bounds[2] || bounds[1] > bounds[3] {
+		return nil, fmt.Errorf("bounds metadata is outside the geographic range")
+	}
+	return bounds, nil
 }
 
 // Preserve coordinate precision in text metadata. Seven decimals remain the
