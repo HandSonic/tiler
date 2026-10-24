@@ -4,7 +4,7 @@
 
 Download map tiles concurrently within GeoJSON boundaries to files, MBTiles (SQLite), Compact v2, or S3. Sources must use standard Web Mercator XYZ/TMS grids. URL placeholders are `{z}`, `{x}`, `{y}`, and `{-y}` for an inverted row. Multiple `[[lrs]]` sections can assign different boundaries to different zoom levels.
 
-The same executable includes `convert` for conversion and appending between local/S3 tile directories, MBTiles, PMTiles, and Compact v2, `upload` for existing archives or Compact caches on S3/MinIO, and `repair` for replaying failed tile coordinates.
+The same executable includes `convert` for conversion and appending between local/S3 tile directories, MBTiles, PMTiles, and Compact v2, `upload` for existing archives or Compact caches on S3/MinIO, and `repair` for replaying failed tile coordinates. See the [latest audit record](docs/audit-2026-10-24.md) for fixes and validation boundaries.
 
 For large raster datasets, `output.format = "compactv2"` writes each tile directly into its standard 128×128 bundle, without loose image files. Resume, append, and repair work per tile. External MapProxy can expose the whole cache as one layer. See the [Compact v2 guide](docs/compact-v2.md) and [MapProxy example](docs/mapproxy-compactv2.yaml). CI verifies the generated cache using real MapProxy XYZ, TMS, and WMTS requests; MapProxy is not a runtime dependency of tiler.
 

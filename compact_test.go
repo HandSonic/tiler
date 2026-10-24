@@ -46,6 +46,29 @@ func TestCompactEmptyResumeAndCorruptIndex(t *testing.T) {
 	if err := png.Encode(&body, image.NewRGBA(image.Rect(0, 0, 512, 512))); err != nil {
 		t.Fatal(err)
 	}
+	// Fail metadata publication after initialization. A following tile must
+	// not use the uncommitted size and create a bundle that conf.xml cannot read.
+	cdi := filepath.Join(root, "conf.cdi")
+	if err := os.Rename(cdi, cdi+".saved"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(cdi, 0755); err != nil {
+		t.Fatal(err)
+	}
+	for _, x := range []uint32{130, 131} {
+		if err := cache.Save(ctx, 9, x, 127, body.Bytes()); err == nil {
+			t.Fatal("metadata failure allowed a tile with unpublished dimensions")
+		}
+	}
+	if _, err := os.Stat(compactPath(root, 9, 130, 127)); !os.IsNotExist(err) {
+		t.Fatalf("metadata failure created a bundle: %v", err)
+	}
+	if err := os.Remove(cdi); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(cdi+".saved", cdi); err != nil {
+		t.Fatal(err)
+	}
 	if err := cache.Save(ctx, 9, 130, 127, body.Bytes()); err != nil {
 		t.Fatal(err)
 	}

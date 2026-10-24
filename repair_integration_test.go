@@ -694,18 +694,25 @@ func TestRepairManifestValidationPrecedesOutputMutation(t *testing.T) {
 }
 
 func TestRepairManifestValidationDoesNotCreateOutput(t *testing.T) {
-	for _, kind := range []string{"file", "mbtiles"} {
-		t.Run(kind, func(t *testing.T) {
+	for _, testcase := range []struct{ kind, report string }{
+		{"file", "invalid.txt"}, {"mbtiles", "invalid.txt"},
+		{"file", "metadata.json/errors.json"}, {"mbtiles", "errors.json"},
+		{"mbtiles", "../tiles.json-wal/errors.json"}, {"mbtiles", "../tiles.json-journal/errors.json"},
+		{"compactv2", "conf.xml/errors.json"}, {"compactv2", "CONF.CDI/errors.json"},
+		{"compactv2", "_ALLLAYERS/l00/r0000c0000.BUNDLE/errors.json"},
+		{"compactv2", "."}, {"file", ".."},
+	} {
+		t.Run(testcase.kind+"/"+testcase.report, func(t *testing.T) {
 			dir := configureRegressionOutput(t)
-			viper.Set("output.format", kind)
-			viper.Set("output.failure_file", filepath.Join(dir, "invalid.txt"))
+			viper.Set("output.format", testcase.kind)
 			template := "https://example.test/{z}/{x}/{y}"
 			task := NewTask(repairIntegrationLayers(template), repairIntegrationMap(template))
 			t.Cleanup(task.Cancel)
-			parent := filepath.Join(dir, "new-output")
-			task.File = filepath.Join(parent, "tiles")
-			if err := task.Download(); err == nil || !strings.Contains(err.Error(), ".json") {
-				t.Fatalf("invalid manifest extension accepted: %v", err)
+			parent := filepath.Join(dir, "new-output.json")
+			task.File = filepath.Join(parent, "tiles.json")
+			viper.Set("output.failure_file", filepath.Join(task.File, filepath.FromSlash(testcase.report)))
+			if err := task.Download(); err == nil || !strings.Contains(err.Error(), "failure") {
+				t.Fatalf("invalid manifest path accepted: %v", err)
 			}
 			if _, err := os.Stat(parent); !os.IsNotExist(err) {
 				t.Fatalf("invalid report configuration created output directories: %v", err)

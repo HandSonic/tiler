@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	"github.com/paulmach/orb/maptile"
 )
@@ -23,6 +24,10 @@ import (
 const FailureManifestVersion = 1
 
 const maxFailureManifestBytes = 64 << 20
+
+// Bound each diagnostic without truncating the separate tile/source identity.
+// This is a log/report policy, not a limit on an HTTP or S3 response body.
+const maxFailureErrorBytes = 4 << 10
 
 // FailureTarget locates the original output without keeping credentials or a
 // service endpoint in the manifest. Paths can be relative or absolute.
@@ -464,7 +469,7 @@ func sensitiveFailureQueryKey(key string) bool {
 
 var failureURLPattern = regexp.MustCompile(`(?i)https?://[^\s<>"']+`)
 var failureSecretPattern = regexp.MustCompile(`(?i)["']?\b(token|access_token|tk|key|api[_-]?key|authorization|signature|secret|secret_key|client_secret|aws_secret_access_key|password|auth|authkey|credentials?|x-amz-[a-z0-9-]+|x-goog-[a-z0-9-]+)["']?\s*[:=]\s*[^\s,;]+`)
-var failureQuotedSecretPattern = regexp.MustCompile(`(?i)["']?\b(token|access_token|tk|key|api[_-]?key|authorization|signature|secret|secret_key|client_secret|aws_secret_access_key|password|auth|authkey|credentials?|x-amz-[a-z0-9-]+|x-goog-[a-z0-9-]+)["']?\s*[:=]\s*("[^"\r\n]*"|'[^'\r\n]*')`)
+var failureQuotedSecretPattern = regexp.MustCompile(`(?i)["']?\b(token|access_token|tk|key|api[_-]?key|authorization|signature|secret|secret_key|client_secret|aws_secret_access_key|password|auth|authkey|credentials?|x-amz-[a-z0-9-]+|x-goog-[a-z0-9-]+)["']?\s*[:=]\s*("(?:\\.|[^"\\\r\n])*"|'(?:\\.|[^'\\\r\n])*')`)
 var failureAuthPattern = regexp.MustCompile(`(?i)\b(Bearer|Basic)\s+[^\s,;"'<>]+`)
 
 func safeFailureError(err error) string {
@@ -473,6 +478,9 @@ func safeFailureError(err error) string {
 	if errors.As(err, &requestError) {
 		message = requestError.Op + ": " + requestError.Err.Error()
 	}
+	// Preserve escaped quote boundaries inside credentials before URL
+	// replacement can consume a trailing backslash in the same value.
+	message = failureQuotedSecretPattern.ReplaceAllString(message, "$1=[redacted]")
 	message = failureURLPattern.ReplaceAllStringFunc(message, func(raw string) string {
 		u, err := url.Parse(raw)
 		if err != nil || u.Host == "" {
@@ -480,7 +488,15 @@ func safeFailureError(err error) string {
 		}
 		return u.Scheme + "://" + u.Host + "/[redacted]"
 	})
-	message = failureQuotedSecretPattern.ReplaceAllString(message, "$1=[redacted]")
 	message = failureAuthPattern.ReplaceAllString(message, "$1 [redacted]")
-	return failureSecretPattern.ReplaceAllString(message, "$1=[redacted]")
+	message = failureSecretPattern.ReplaceAllString(message, "$1=[redacted]")
+	if len(message) > maxFailureErrorBytes {
+		const suffix = "... [truncated]"
+		end := maxFailureErrorBytes - len(suffix)
+		for end > 0 && !utf8.RuneStart(message[end]) {
+			end--
+		}
+		message = message[:end] + suffix
+	}
+	return message
 }

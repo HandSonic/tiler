@@ -196,7 +196,7 @@ timeout_seconds = 60
 | `mbtiles` | 数据库完整路径加 `.failures.json`，例如 `output/basemap.mbtiles.failures.json` |
 | `s3` | `output.directory/地图名-zmin-max.ID.failures.json`，日志显示实际路径 |
 
-也可在 `[output]` 设置 `failure_file = "output/failures.json"`。路径必须以 `.json` 结尾，不能覆盖文件输出的 `metadata.json`。S3 的清单保存在本地，不作为对象上传。
+也可在 `[output]` 设置 `failure_file = "output/failures.json"`。路径必须以 `.json` 结尾，不能占用输出自身或其父目录，也不能把元数据文件、MBTiles 数据库及其 `-wal`/`-journal`、Compact 配置或 bundle 当成报告目录。普通 Compact 层目录内的 `errors.json` 和缓存外的报告仍可使用，检查在创建输出前完成。S3 的清单保存在本地，不作为对象上传。
 
 ```sh
 ./tiler repair -c conf.toml -failures output/basemap.mbtiles.failures.json
@@ -211,7 +211,9 @@ timeout_seconds = 60
 
 必须使用相同地图名、瓦片格式、来源、级别及输出配置。原本地目录/数据库必须仍存在且类型正确；目标丢失时应恢复完整任务，不能只重建清单中的子集。原本地目标还必须位于当前 `output.directory` 内。文件/S3 还会校验原路径模板；S3 校验原 bucket、prefix 以及 endpoint/region 指纹，避免补写到另一个布局或服务。
 
-清单保存坐标、来源指纹、脱敏错误和输出位置，不保存原始来源 URL 或认证密钥。可在 TOML 中更新常见 token/key 等认证参数后补洞；图层、样式等身份参数仍须保持一致。无法匹配来源的清单会被拒绝。
+清单保存坐标、来源指纹、脱敏错误和输出位置，不保存原始来源 URL 或认证密钥。单条错误在脱敏后最多保留 4 KiB 的 UTF-8 诊断摘要，超出时标注截断，坐标和来源指纹不受影响。可在 TOML 中更新常见 token/key 等认证参数后补洞；图层、样式等身份参数仍须保持一致。无法匹配来源的清单会被拒绝。
+
+整体清单的保存/加载上限仍为 64 MiB，运行中的失败记录保存在内存；单条摘要限制不等于全任务内存上限。持续大量失败时应缩小批次或暂停排查，超出清单预算后仍可用原任务的 `resume` 重新检查整个范围。
 
 失败清单仅覆盖已尝试但失败的瓦片；Ctrl+C 时尚未调度的范围不会全部加入清单。恢复整个中断任务，请保持原目标并设置 `output.resume = true` 后重新运行下载；`repair` 适合补已知的失败项。
 

@@ -4,7 +4,7 @@
 
 按 GeoJSON 范围和缩放级别并发下载地图瓦片，支持本地文件、MBTiles（SQLite）、Compact v2 及 S3 输出。数据源需使用标准 Web Mercator XYZ/TMS 瓦片地址；URL 中使用 `{z}`、`{x}`、`{y}`，需要反转行号时使用 `{-y}`。可通过多个 `[[lrs]]` 为不同级别设置不同范围。
 
-另有 `convert` 在本地/S3 瓦片目录、MBTiles、PMTiles、Compact v2 之间转换和追加，`upload` 将已有归档或 Compact 缓存上传到 S3/MinIO，`repair` 按失败清单补下载，均集成在同一个可执行文件中。最近一轮修复与验证见 [深入审计记录](docs/audit-2026-10-21.md)。
+另有 `convert` 在本地/S3 瓦片目录、MBTiles、PMTiles、Compact v2 之间转换和追加，`upload` 将已有归档或 Compact 缓存上传到 S3/MinIO，`repair` 按失败清单补下载，均集成在同一个可执行文件中。最近一轮修复与验证见 [循环审计记录](docs/audit-2026-10-24.md)。
 
 大范围栅格下载可用 `output.format = "compactv2"`：每个 bundle 固定容纳一个级别内最多 128×128 张瓦片，直接写入 bundle，不产生散图片。支持续传、追加、补洞；外部 MapProxy 可把整套目录作为同一图层读取。配置和真实 MapProxy 验证见 [Compact v2 说明](docs/compact-v2.md) 与 [MapProxy 配置示例](docs/mapproxy-compactv2.yaml)。
 

@@ -17,6 +17,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/paulmach/orb"
 	"github.com/paulmach/orb/maptile"
@@ -216,11 +217,22 @@ func TestAuditFailureErrorsDoNotLeakQuotedOrBearerCredentials(t *testing.T) {
 		`{"access_token":"private-json-token"}`,
 		`api_key="private quoted key"`,
 		`password='private quoted password'`,
+		`{"password":"start\" private escaped tail","api_key":"private second key"}`,
+		`password='start\' private escaped tail'`,
+		`{"password":"https://example.test/secret\" private escaped tail"}`,
 	} {
 		got := safeFailureError(errors.New(message))
 		if strings.Contains(got, "private") {
 			t.Errorf("credential leaked: %s", got)
 		}
+	}
+	message := `提示 {"password":"private\\\" tail","note":"保留文本"} 完成`
+	if got := safeFailureError(errors.New(message)); strings.Contains(got, "private") || !strings.Contains(got, "保留文本") || !strings.HasSuffix(got, "完成") {
+		t.Fatalf("escaped backslashes leaked a credential or changed public context: %s", got)
+	}
+	message = `password="private" ` + strings.Repeat("诊断", maxFailureErrorBytes)
+	if got := safeFailureError(errors.New(message)); len(got) > maxFailureErrorBytes || !utf8.ValidString(got) || !strings.HasSuffix(got, "[truncated]") || strings.Contains(got, "private") {
+		t.Fatal("long diagnostic was not safely redacted and bounded at a UTF-8 boundary")
 	}
 }
 

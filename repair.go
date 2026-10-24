@@ -197,13 +197,26 @@ func (task *Task) setupFailureManifest() error {
 	if err := validateFailureManifestSafety(path); err != nil {
 		return fmt.Errorf("unsafe failure manifest path: %w", err)
 	}
-	if task.outformat == "file" || task.outformat == "compactv2" {
-		metadata, err := filepath.Abs(filepath.Join(task.File, "metadata.json"))
-		if err != nil {
-			return err
+	if task.outformat != "s3" {
+		if archivePathContains(strings.ToLower(path), strings.ToLower(target.Path)) {
+			return fmt.Errorf("failure manifest cannot be the output path or one of its parent directories")
 		}
-		if strings.EqualFold(path, metadata) {
-			return fmt.Errorf("failure manifest cannot replace metadata.json")
+		files := []string{target.Path}
+		if task.outformat == "mbtiles" {
+			files = append(files, target.Path+"-wal", target.Path+"-journal")
+		}
+		if task.outformat == "file" || task.outformat == "compactv2" {
+			files = []string{filepath.Join(target.Path, "metadata.json")}
+			if task.outformat == "compactv2" {
+				files = append(files, filepath.Join(target.Path, "conf.xml"), filepath.Join(target.Path, "conf.cdi"))
+			}
+		}
+		// These files may not exist until output initialization. Check path
+		// components now, including Windows casing, before creating anything.
+		for _, file := range files {
+			if archivePathContains(strings.ToLower(file), strings.ToLower(path)) {
+				return fmt.Errorf("failure manifest cannot replace or be inside output file %s", filepath.Base(file))
+			}
 		}
 	}
 	if task.outformat == "file" {
@@ -213,17 +226,24 @@ func (task *Task) setupFailureManifest() error {
 			return err
 		}
 		relative, err := filepath.Rel(root, path)
-		if err != nil {
-			return err
-		}
-		if relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		if err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
 			reserved = append(reserved, filepath.ToSlash(relative))
 		}
 		if err := validateTilePathFileConflicts(task.tilePath, task.TileMap.Format, reserved...); err != nil {
 			return err
 		}
-	} else if task.outformat == "mbtiles" && strings.EqualFold(path, target.Path) {
-		return fmt.Errorf("failure manifest cannot replace the mbtiles database")
+	} else if task.outformat == "compactv2" {
+		relative, err := filepath.Rel(target.Path, path)
+		if err == nil { // A report on another Windows volume is outside the cache.
+			parts := strings.Split(relative, string(filepath.Separator))
+			if len(parts) > 1 && strings.EqualFold(parts[0], "_alllayers") {
+				for _, parent := range parts[1 : len(parts)-1] {
+					if strings.EqualFold(filepath.Ext(parent), ".bundle") {
+						return fmt.Errorf("failure manifest cannot be inside a Compact bundle path")
+					}
+				}
+			}
+		}
 	}
 	if info, err := os.Stat(path); err == nil {
 		if !info.Mode().IsRegular() {

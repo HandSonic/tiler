@@ -489,6 +489,8 @@ func (cache *compactCache) Save(ctx context.Context, z int, x, y uint32, body []
 	if cache.tileSize == 0 {
 		cache.tileSize = config.Width
 		if err := cache.writeMetadata(); err != nil {
+			// A later tile must retry publishing its dimensions before writing.
+			cache.tileSize = 0
 			return err
 		}
 	}
