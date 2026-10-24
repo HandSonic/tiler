@@ -119,7 +119,7 @@ func convertLocalArchive(ctx context.Context, input, output string, opts Archive
 			if originalFormat != "" && targetFormat != originalFormat {
 				return result, fmt.Errorf("directory append cannot change the existing tile format")
 			}
-			oldPattern, e := normalizeTilePath(previousFileMetadata["tile_path"])
+			oldPattern, e := tilePathFromMetadata(previousFileMetadata)
 			if e != nil {
 				return result, e
 			}
@@ -570,9 +570,10 @@ func archiveWalkDirectoryCanonical(ctx context.Context, input, pattern string, r
 		return nil, err
 	}
 	if pattern == "" {
-		pattern = metadata["tile_path"]
+		pattern, err = tilePathFromMetadata(metadata)
+	} else {
+		pattern, err = normalizeTilePath(pattern)
 	}
-	pattern, err = normalizeTilePath(pattern)
 	if err != nil {
 		return nil, err
 	}

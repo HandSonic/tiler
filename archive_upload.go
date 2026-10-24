@@ -211,6 +211,10 @@ func planArchiveUploads(ctx context.Context, prefix string, inputs []string) ([]
 			if _, err := compactReadMetadata(absolute); err != nil {
 				return nil, err
 			}
+			layers := filepath.Join(absolute, "_alllayers")
+			if err := validateOutputFilePath(layers, layers); err != nil {
+				return nil, err
+			}
 		}
 		cacheMetadata := make(map[string]os.FileInfo)
 		err = filepath.WalkDir(absolute, func(filename string, entry fs.DirEntry, walkErr error) error {
@@ -224,6 +228,9 @@ func planArchiveUploads(ctx context.Context, prefix string, inputs []string) ([]
 				return fmt.Errorf("archive directory contains symbolic link %s", filename)
 			}
 			if entry.IsDir() {
+				if compact && filename != absolute && strings.EqualFold(filepath.Ext(entry.Name()), ".bundle") {
+					return fmt.Errorf("compact bundle must be a regular file: %s", filename)
+				}
 				return nil
 			}
 			entryInfo, err := entry.Info()
@@ -240,7 +247,7 @@ func planArchiveUploads(ctx context.Context, prefix string, inputs []string) ([]
 			if compact {
 				metadata, allowed := compactCacheFile(filepath.ToSlash(relative))
 				if !allowed {
-					if strings.HasSuffix(relative, ".bundle") {
+					if strings.EqualFold(filepath.Ext(relative), ".bundle") {
 						return fmt.Errorf("invalid Compact bundle path %q", relative)
 					}
 					return nil

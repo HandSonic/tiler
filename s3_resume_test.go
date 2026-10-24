@@ -20,7 +20,8 @@ func TestS3ResumeChecksObjectsBeforeDownloading(t *testing.T) {
 	viper.Set("task.workers", 1)
 	body := tileDataPNG(t)
 	var downloads, uploads, checks int32
-	var metadataPresent atomic.Bool
+	var metadataBody atomic.Value
+	metadataBody.Store("")
 	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&downloads, 1)
 		w.Write(body)
@@ -32,10 +33,10 @@ func TestS3ResumeChecksObjectsBeforeDownloading(t *testing.T) {
 			return
 		}
 		if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/metadata.json") {
-			if !metadataPresent.Load() {
+			if metadata := metadataBody.Load().(string); metadata == "" {
 				w.WriteHeader(http.StatusNotFound)
 			} else {
-				io.WriteString(w, `{"format":"png","tile_path":"{z}/{x}/{y}.{format}"}`)
+				io.WriteString(w, metadata)
 			}
 			return
 		}
@@ -70,7 +71,7 @@ func TestS3ResumeChecksObjectsBeforeDownloading(t *testing.T) {
 	}
 	// A converted prefix can declare a layout before a download appends a
 	// disjoint region. Validate that declaration before checking new tiles.
-	metadataPresent.Store(true)
+	metadataBody.Store(`{"format":"png","tile_path":"{z}/{x}/{y}.{format}"}`)
 	for _, changed := range []struct{ pattern, format, message string }{
 		{"{z}/{y}/{x}.{format}", PNG, "tile_path"},
 		{defaultTilePath, JPG, "tile format"},
@@ -91,6 +92,27 @@ func TestS3ResumeChecksObjectsBeforeDownloading(t *testing.T) {
 	}
 	if downloads != 1 || uploads != 1 || checks != 3 {
 		t.Fatal("matching prefix metadata did not preserve the existing tile")
+	}
+	metadataBody.Store(`{"format":"png","scheme":"tms"}`)
+	if err := newRegressionTask(t, source.URL).Download(); err == nil || !strings.Contains(err.Error(), "tile_path") {
+		t.Fatalf("XYZ resume accepted a scheme-only TMS cache: %v", err)
+	}
+	if downloads != 1 || uploads != 1 || checks != 3 {
+		t.Fatal("mismatching TMS declaration reached tile requests")
+	}
+	viper.Set("output.tile_path", "{z}/{x}/{-y}.{format}")
+	if err := newRegressionTask(t, source.URL).Download(); err != nil {
+		t.Fatalf("matching TMS declaration rejected an unmarked legacy tile: %v", err)
+	}
+	if downloads != 1 || uploads != 1 || checks != 4 {
+		t.Fatal("matching TMS declaration did not skip the existing tile")
+	}
+	metadataBody.Store(`{"scheme":"tms"}`)
+	if err := newRegressionTask(t, source.URL).Download(); err == nil || !strings.Contains(err.Error(), "unmarked") {
+		t.Fatalf("incomplete declaration accepted an unmarked custom-layout tile: %v", err)
+	}
+	if downloads != 1 || uploads != 1 {
+		t.Fatal("incomplete declaration reached source downloads or PUT")
 	}
 }
 

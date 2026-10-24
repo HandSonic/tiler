@@ -34,6 +34,22 @@ func TestCompactEmptyResumeAndCorruptIndex(t *testing.T) {
 	if err := cache.Close(); err != nil {
 		t.Fatal(err)
 	}
+	// A cache with a file occupying the layers directory must be rejected
+	// before opening it for further downloads.
+	layers := filepath.Join(root, "_alllayers")
+	if err := os.WriteFile(layers, []byte("not a directory"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if reopened, err := compactOpen(ctx, root, metadata, true); err == nil {
+		reopened.Close()
+		t.Fatal("resume accepted a file in place of the layers directory")
+	}
+	if _, err := planArchiveUploads(ctx, "cache", []string{root}); err == nil {
+		t.Fatal("upload accepted a file in place of the layers directory")
+	}
+	if err := os.Remove(layers); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.MkdirAll(filepath.Join(root, "_alllayers", "L09"), 0755); err != nil {
 		t.Fatal(err)
 	}

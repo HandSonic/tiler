@@ -54,6 +54,20 @@ func TestConfigErrorsAndNoLayers(t *testing.T) {
 	if NewTask(nil, TileMap{}) != nil {
 		t.Fatal("empty layers should not produce a runnable task")
 	}
+	configureRegressionOutput(t)
+	viper.Set("output.format", "s3")
+	layers := []Layer{{Zoom: 0, Collection: orb.Collection{orb.Point{0, 0}}}}
+	for _, format := range []string{"", "gif", " JPEG "} {
+		task := NewTask(layers, TileMap{URL: "https://example.test/{z}/{x}/{y}", Format: format})
+		t.Cleanup(task.Cancel)
+		if format == " JPEG " {
+			if task.initErr != nil || task.TileMap.Format != format {
+				t.Fatalf("format validation changed an accepted encoding: %q, %v", task.TileMap.Format, task.initErr)
+			}
+		} else if task.initErr == nil || !strings.Contains(task.initErr.Error(), "tm.format") {
+			t.Fatalf("invalid tm.format %q was not rejected during initialization: %v", format, task.initErr)
+		}
+	}
 }
 
 func TestOutputNamesAreWindowsCompatible(t *testing.T) {

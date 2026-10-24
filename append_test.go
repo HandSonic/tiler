@@ -291,6 +291,43 @@ func TestDownloadFileResumeRejectsChangedLayoutAndAcceptsLegacyXYZ(t *testing.T)
 	if !bytes.Equal(before, after) {
 		t.Fatal("invalid resume configuration changed original metadata")
 	}
+	for _, testcase := range []struct {
+		name, metadata, pattern, scheme string
+		wantErr                         bool
+	}{
+		{"implicit TMS rejects XYZ", `{"format":"png","scheme":"tms"}`, defaultTilePath, "", true},
+		{"implicit TMS accepts TMS", `{"format":"png","scheme":"tms"}`, "{z}/{x}/{-y}.{format}", "tms", false},
+		{"explicit layout determines scheme", `{"format":"png","scheme":"tms","tile_path":"{z}/{x}/{y}.{format}"}`, defaultTilePath, "xyz", false},
+	} {
+		t.Run(testcase.name, func(t *testing.T) {
+			task := fileMetadataTask(t.TempDir())
+			task.resume, task.tilePath = true, testcase.pattern
+			filename := filepath.Join(task.File, "metadata.json")
+			if err := os.WriteFile(filename, []byte(testcase.metadata), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if err := task.saveFileMetadata(); (err != nil) != testcase.wantErr {
+				t.Fatalf("resume result: %v, want error=%v", err, testcase.wantErr)
+			}
+			body, err := os.ReadFile(filename)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if testcase.wantErr {
+				if string(body) != testcase.metadata {
+					t.Fatal("rejected TMS resume changed original metadata")
+				}
+				return
+			}
+			var metadata map[string]string
+			if err := json.Unmarshal(body, &metadata); err != nil {
+				t.Fatal(err)
+			}
+			if metadata["tile_path"] != testcase.pattern || metadata["scheme"] != testcase.scheme {
+				t.Fatalf("resume published contradictory layout metadata: %v", metadata)
+			}
+		})
+	}
 }
 
 func TestDownloadFileMetadataRejectsNullCoordinateArrays(t *testing.T) {

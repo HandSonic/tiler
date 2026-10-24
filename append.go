@@ -141,10 +141,6 @@ func (task *Task) fileMetadataForDownload() (map[string]string, error) {
 		return nil, err
 	}
 	metadata["tile_path"] = pattern
-	metadata["scheme"] = "xyz"
-	if strings.Contains(pattern, "{-y}") {
-		metadata["scheme"] = "tms"
-	}
 	if !task.resume {
 		return mergeDownloadMetadata(nil, metadata, true)
 	}
@@ -204,7 +200,7 @@ func mergeDownloadMetadata(existing, incoming map[string]string, fileOutput bool
 			return nil, err
 		}
 		if existing != nil {
-			oldPattern, err := normalizeTilePath(existing["tile_path"])
+			oldPattern, err := tilePathFromMetadata(existing)
 			if err != nil {
 				return nil, fmt.Errorf("invalid existing tile_path metadata: %w", err)
 			}
@@ -213,6 +209,10 @@ func mergeDownloadMetadata(existing, incoming map[string]string, fileOutput bool
 			}
 		}
 		result["tile_path"] = pattern
+		result["scheme"] = "xyz"
+		if strings.Contains(pattern, "{-y}") {
+			result["scheme"] = "tms"
+		}
 	} else {
 		delete(result, "tile_path")
 	}

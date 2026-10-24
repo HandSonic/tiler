@@ -247,6 +247,25 @@ func TestS3ConversionLooseRoundTripWithPaginationAndCustomLayouts(t *testing.T) 
 			t.Errorf("source JSON extension %s changed type or value: %s", key, extensions[key])
 		}
 	}
+	// Third-party TMS caches may declare only scheme, without tiler's template.
+	store.put("source/legacy/2/1/1.png", red)
+	store.put("source/legacy/metadata.json", []byte(`{"format":"png","scheme":"tms"}`))
+	legacy := filepath.Join(root, "legacy.mbtiles")
+	if _, err := ConvertArchive(context.Background(), "s3://source/legacy/", legacy, ArchiveConvertOptions{S3: out}); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(archiveS3ReadMBTile(t, legacy, 2, 1, 2), red) {
+		t.Fatal("scheme-only TMS input changed tile coordinates")
+	}
+	addition := filepath.Join(root, "addition")
+	archiveTestWrite(t, filepath.Join(addition, "2", "1", "2.png"), blue)
+	archiveTestWrite(t, filepath.Join(addition, "3", "6", "5.png"), blue)
+	if _, err := ConvertArchive(context.Background(), addition, "s3://source/legacy/", ArchiveConvertOptions{S3: out, Append: true, OutputTilePath: "{z}/{x}/{-y}.{format}"}); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(store.get("source/legacy/2/1/1.png"), red) || !bytes.Equal(store.get("source/legacy/3/6/2.png"), blue) {
+		t.Fatal("scheme-only TMS append overwrote overlap or misplaced new tile")
+	}
 }
 
 func TestS3ConversionChecksDirectDownloadMarkers(t *testing.T) {

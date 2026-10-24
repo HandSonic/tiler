@@ -75,11 +75,14 @@ func TestCompactS3RoundTripAppendAndUpload(t *testing.T) {
 	archiveTestWrite(t, filepath.Join(regionB, "8", "129", "131.png"), green)
 	// A late listing page can contain a noncanonical alias even after valid
 	// bundles were found. Reject it before changing any remote object.
-	for _, aliasKey := range []string{"destination/cache/_alllayers/L8/R0080C0080.bundle", "destination/cache/other.bundle"} {
+	for _, aliasKey := range []string{"destination/cache/_alllayers/L8/R0080C0080.bundle", "destination/cache/other.bundle", "destination/cache/_alllayers/L08/R0080C0080.BUNDLE"} {
 		store.put(aliasKey, store.get("destination/cache/_alllayers/L08/R0080C0080.bundle"))
 		putsBeforeAlias := store.count("PUT")
 		if _, err := ConvertArchive(ctx, regionB, destination, ArchiveConvertOptions{S3: out, OutputKind: "compactv2", Append: true}); err == nil || !strings.Contains(err.Error(), "canonical") {
 			t.Fatalf("S3 append accepted an external bundle path alias %s: %v", aliasKey, err)
+		}
+		if _, err := ConvertArchive(ctx, destination, filepath.Join(root, "alias-input.mbtiles"), ArchiveConvertOptions{S3: out}); err == nil {
+			t.Fatalf("S3 conversion silently omitted an invalid bundle path %s", aliasKey)
 		}
 		if store.count("PUT") != putsBeforeAlias {
 			t.Fatal("rejected S3 append modified remote objects")

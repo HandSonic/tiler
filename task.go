@@ -111,6 +111,10 @@ func newDownloadTaskContext(parent context.Context, layers []Layer, m TileMap, m
 		task.initErr = err
 		return &task
 	}
+	if err := validateFailureFormat(strings.ToLower(strings.TrimSpace(m.Format))); err != nil {
+		task.initErr = fmt.Errorf("tm.format: %w", err)
+		return &task
+	}
 	task.manifest = manifest
 	task.repairMode = manifest != nil
 	if task.manifest == nil {

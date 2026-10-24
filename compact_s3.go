@@ -58,7 +58,7 @@ func archiveS3DownloadCompact(ctx context.Context, out *s3Output, prefix, direct
 		}
 		metadata, allowed := compactCacheFile(relative)
 		if !allowed {
-			if strings.HasSuffix(relative, ".bundle") {
+			if strings.EqualFold(filepath.Ext(strings.TrimSuffix(relative, "/")), ".bundle") {
 				return fmt.Errorf("invalid S3 Compact bundle path %q", relative)
 			}
 			return nil
@@ -110,7 +110,7 @@ func archiveS3InspectCompactBundles(ctx context.Context, out *s3Output, prefix s
 	err := archiveS3Walk(ctx, out, prefix, func(_, relative string, _ int64) error {
 		// List every bundle path before publication, without downloading the
 		// bodies. Canonical lookups alone cannot detect external path aliases.
-		if !strings.HasSuffix(relative, ".bundle") {
+		if !strings.EqualFold(filepath.Ext(strings.TrimSuffix(relative, "/")), ".bundle") {
 			return nil
 		}
 		_, allowed := compactCacheFile(relative)

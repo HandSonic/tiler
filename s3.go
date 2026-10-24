@@ -104,6 +104,7 @@ func newS3OutputForBucket(ctx context.Context, bucket string) (*s3Output, error)
 // Resume already needs read access. Check the cache marker and declared
 // prefix identity once so a disjoint region cannot mix layouts or formats.
 func (out *s3Output) validateResumeTarget(ctx context.Context, format string) error {
+	out.allowUnmarkedTiles = false
 	_, compact, err := archiveS3Head(ctx, out, archiveS3Key(out.prefix, "conf.xml"))
 	if err != nil {
 		return err
@@ -115,7 +116,7 @@ func (out *s3Output) validateResumeTarget(ctx context.Context, format string) er
 	if err != nil || !present {
 		return err
 	}
-	previousPath, err := normalizeTilePath(metadata["tile_path"])
+	previousPath, err := tilePathFromMetadata(metadata)
 	if err != nil {
 		return fmt.Errorf("invalid existing S3 tile path: %w", err)
 	}
@@ -139,6 +140,9 @@ func (out *s3Output) validateResumeTarget(ctx context.Context, format string) er
 		if !matches {
 			return fmt.Errorf("existing S3 metadata uses a different tile format; keep the original format or choose a new prefix")
 		}
+		// A validated prefix declaration also identifies legacy tiles that
+		// predate per-object markers. Present markers are still checked.
+		out.allowUnmarkedTiles = true
 	}
 	return nil
 }

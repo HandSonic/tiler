@@ -40,7 +40,7 @@ Windows PowerShell 可直接使用示例中的单引号模板；将 `./tiler` �
 | --- | --- |
 | `-input` / `-output` | 必填输入和输出路径或 S3 URI |
 | `-output-type file\|mbtiles\|pmtiles\|compactv2` | 显式指定输出形式；新 Compact 目录须显式指定；已有 Compact 由 conf.xml 识别，其余目录默认散瓦片，归档由扩展名识别 |
-| `-input-tile-path` | 显式输入目录布局；未提供时读取 `metadata.json` 的 `tile_path`，再回落到默认 XYZ |
+| `-input-tile-path` | 显式输入目录布局；未提供时读取 `metadata.json` 的 `tile_path`；缺少模板且 `scheme=tms` 时使用 `{z}/{x}/{-y}.{format}`，其余回落到默认 XYZ |
 | `-tile-path` | 输出散瓦片布局；本地默认 XYZ，S3 未显式指定时先使用配置中的 `output.tile_path`，再默认 XYZ |
 | `-format png\|jpg\|pbf\|webp` | 目标编码；混合格式输入需明确选择目标 |
 | `-name` | 可选归档名称 |
@@ -88,9 +88,9 @@ tile_path = "{z}/{y}/{x}.{format}"
 
 必须含 `{z}`、`{x}`，并且包含 `{y}` 或 `{-y}` 中的一种；`{format}` 可选。只接受这些占位符。数字坐标占位符之间必须有非数字分隔符，拒绝 `{x}{y}`、`{x}0{y}` 等会让不同坐标生成同一路径的模板。路径必须相对根目录，不能使用 `..`、绝对路径、反斜杠、Windows 保留名称或非法文件名字符。
 
-本地目录的 `metadata.json` 会记录 `tile_path`，转换时可自动识别。恢复、追加、补洞必须使用同一模板；更换模板时应使用新目录或新 S3 prefix。旧失败报告没有 `tile_path` 时按默认 XYZ 处理。MBTiles/PMTiles/Compact v2 内部没有目录布局设置。
+本地目录的 `metadata.json` 会记录 `tile_path`，转换时可自动识别。本地/S3 的外部目录若只声明 `scheme=tms`，按默认 TMS 布局读取；明确的 `tile_path` 优先，不重复翻转 Y。下载仍使用配置中的模板，恢复、追加、补洞必须与旧布局一致；更换模板时应使用新目录或新 S3 prefix。旧失败报告没有 `tile_path` 时仍按默认 XYZ 处理。MBTiles/PMTiles/Compact v2 内部没有目录布局设置。
 
-新写入的 S3 单张瓦片会附带模板、XYZ 坐标和格式的对象 metadata，恢复时据此检查。默认 XYZ 可兼容旧的无标记对象；自定义布局的旧对象若没有这些标记，直接下载恢复无法确认其布局，会明确拒绝。`convert` 在前缀 `metadata.json` 已确认模板和格式一致时，可以追加外部自定义布局的数据。
+新写入的 S3 单张瓦片会附带模板、XYZ 坐标和格式的对象 metadata，恢复时据此检查。默认 XYZ 可兼容旧的无标记对象；自定义布局的旧对象没有这些标记时，直接下载恢复须先由前缀 `metadata.json` 确认模板及明确声明的格式均一致，否则拒绝。已有对象标记与请求不一致时仍拒绝，不会被前缀元数据绕过。`convert` 也可通过前缀元数据识别外部自定义布局。
 
 直接 S3 下载开启恢复、追加或补洞时，也会读取已有前缀的 `metadata.json`，拒绝与其中声明的路径模板或格式冲突；即使本次地区与旧瓦片不重叠也会检查。使用 `{format}` 时，`jpg`/`jpeg` 会产生不同对象键，必须保持原后缀。未提供该文件的旧前缀仍沿用逐对象检查；直存不改写该文件的范围信息。未开启恢复的纯 PUT 下载不增加读取要求。
 

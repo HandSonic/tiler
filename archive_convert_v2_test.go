@@ -118,6 +118,35 @@ func TestArchiveV2LocalRoundTripMatrixAndCustomPaths(t *testing.T) {
 			}
 		}
 	}
+	t.Run("metadata-tms", func(t *testing.T) {
+		// Third-party TMS caches may declare only scheme, without tiler's
+		// tile_path extension. Read and append must infer the same Y direction.
+		tms := filepath.Join(t.TempDir(), "tms")
+		archiveTestWrite(t, filepath.Join(tms, "1", "0", "0.png"), red)
+		archiveTestWrite(t, filepath.Join(tms, "metadata.json"), []byte(`{"format":"png","scheme":"tms"}`))
+		converted := filepath.Join(t.TempDir(), "converted.mbtiles")
+		if _, err := convertLocalArchive(ctx, tms, converted, ArchiveConvertOptions{}); err != nil {
+			t.Fatal(err)
+		}
+		if actual := archiveV2Snapshot(t, converted, ""); len(actual) != 1 || !bytes.Equal(actual["1/0/1"], red) {
+			t.Fatal("scheme-only TMS input was not flipped to XYZ")
+		}
+		if actual := archiveV2Snapshot(t, tms, defaultTilePath); len(actual) != 1 || !bytes.Equal(actual["1/0/0"], red) {
+			t.Fatal("explicit input tile path did not override metadata scheme")
+		}
+		incoming := t.TempDir()
+		archiveTestWrite(t, filepath.Join(incoming, "1", "1", "0.png"), blue)
+		if _, err := convertLocalArchive(ctx, incoming, tms, ArchiveConvertOptions{Append: true}); err != nil {
+			t.Fatal(err)
+		}
+		actual := archiveV2Snapshot(t, tms, "")
+		if len(actual) != 2 || !bytes.Equal(actual["1/0/1"], red) || !bytes.Equal(actual["1/1/0"], blue) {
+			t.Fatal("append changed the existing TMS layout or tile coordinates")
+		}
+		if _, err := os.Stat(filepath.Join(tms, "1", "1", "1.png")); err != nil {
+			t.Fatalf("new tile was not stored with TMS Y: %v", err)
+		}
+	})
 }
 
 func TestArchiveV2PMMetadataTypesSurviveIntermediateFormats(t *testing.T) {

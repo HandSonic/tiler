@@ -469,9 +469,10 @@ func archiveS3TilesToMBTiles(ctx context.Context, out *s3Output, prefix, filenam
 	}
 	pattern := opts.InputTilePath
 	if pattern == "" {
-		pattern = metadata["tile_path"]
+		pattern, err = tilePathFromMetadata(metadata)
+	} else {
+		pattern, err = normalizeTilePath(pattern)
 	}
-	pattern, err = normalizeTilePath(pattern)
 	if err != nil {
 		return result, err
 	}
@@ -664,7 +665,7 @@ func archiveS3ConvertToTiles(ctx context.Context, out *s3Output, input, prefix, 
 	if err != nil {
 		return result, err
 	}
-	oldPattern, err := normalizeTilePath(old["tile_path"])
+	oldPattern, err := tilePathFromMetadata(old)
 	if err != nil {
 		return result, fmt.Errorf("invalid existing S3 tile path: %w", err)
 	}

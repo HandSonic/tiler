@@ -239,6 +239,9 @@ func compactReadMetadata(root string) (map[string]string, error) {
 // for the same coordinates. Stream directory entries without reading tile data.
 // Only bundles establish dimensions; reports and empty directories do not.
 func compactInspectBundles(ctx context.Context, root string) (bool, error) {
+	if err := validateOutputFilePath(root, root); err != nil {
+		return false, err
+	}
 	base := filepath.Join(root, "_alllayers")
 	if err := validateOutputFilePath(base, base); err != nil {
 		return false, err
@@ -250,9 +253,6 @@ func compactInspectBundles(ctx context.Context, root string) (bool, error) {
 			return err
 		}
 		dir, err := os.Open(directory)
-		if directory == base && os.IsNotExist(err) {
-			return nil
-		}
 		if err != nil {
 			return err
 		}
@@ -273,13 +273,13 @@ func compactInspectBundles(ctx context.Context, root string) (bool, error) {
 			if entry.Type()&os.ModeSymlink != 0 {
 				return fmt.Errorf("compact cache must not contain symbolic links")
 			}
-			if entry.IsDir() {
+			if entry.IsDir() && !strings.EqualFold(filepath.Ext(entry.Name()), ".bundle") {
 				if err := inspect(path); err != nil {
 					return err
 				}
 				continue
 			}
-			if !strings.HasSuffix(entry.Name(), ".bundle") {
+			if !strings.EqualFold(filepath.Ext(entry.Name()), ".bundle") {
 				continue
 			}
 			relative, err := filepath.Rel(root, path)
@@ -294,7 +294,7 @@ func compactInspectBundles(ctx context.Context, root string) (bool, error) {
 			populated = true
 		}
 	}
-	err := inspect(base)
+	err := inspect(root)
 	return populated, err
 }
 
@@ -681,11 +681,8 @@ func archiveWalkCompact(ctx context.Context, root string, visit archiveVisit) (m
 	if err := validateOutputFilePath(base, base); err != nil {
 		return nil, err
 	}
-	err = filepath.WalkDir(base, func(path string, entry fs.DirEntry, walkErr error) error {
+	err = filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
-			if path == base && os.IsNotExist(walkErr) {
-				return nil
-			}
 			return walkErr
 		}
 		if err := ctx.Err(); err != nil {
@@ -694,10 +691,8 @@ func archiveWalkCompact(ctx context.Context, root string, visit archiveVisit) (m
 		if entry.Type()&os.ModeSymlink != 0 {
 			return fmt.Errorf("compact cache must not contain symbolic links")
 		}
-		if entry.IsDir() {
-			return nil
-		}
-		if !strings.HasSuffix(entry.Name(), ".bundle") {
+		// The cache directory itself can have any name, including .bundle.
+		if path == root || !strings.EqualFold(filepath.Ext(entry.Name()), ".bundle") {
 			return nil
 		}
 		if !entry.Type().IsRegular() {

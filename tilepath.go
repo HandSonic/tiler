@@ -47,6 +47,16 @@ func normalizeTilePath(pattern string) (string, error) {
 	return template.pattern, nil
 }
 
+// An explicit layout already describes its Y direction. Older TileJSON-only
+// directories can instead declare TMS through scheme without a tile_path.
+func tilePathFromMetadata(metadata map[string]string) (string, error) {
+	pattern := metadata["tile_path"]
+	if pattern == "" && strings.EqualFold(strings.TrimSpace(metadata["scheme"]), "tms") {
+		pattern = "{z}/{x}/{-y}.{format}"
+	}
+	return normalizeTilePath(pattern)
+}
+
 func compiledTilePath(pattern string) (*tilePathTemplate, error) {
 	if pattern == "" {
 		pattern = defaultTilePath

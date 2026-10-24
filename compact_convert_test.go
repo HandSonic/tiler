@@ -119,6 +119,27 @@ func TestCompactConvertRoundTripAndAppend(t *testing.T) {
 	if err := os.Rename(aliasLevel, canonicalLevel); err != nil {
 		t.Fatal(err)
 	}
+	// Case variants and misplaced bundles must not be silently omitted from
+	// conversion/upload or mistaken for an empty cache during resume.
+	bundle := untouched[0]
+	for _, alias := range []string{strings.TrimSuffix(bundle, ".bundle") + ".BUNDLE", filepath.Join(compact, "other.bundle")} {
+		if err := os.Rename(bundle, alias); err != nil {
+			t.Fatal(err)
+		}
+		if result, err := ConvertArchive(ctx, compact, filepath.Join(root, "invalid-path.mbtiles"), ArchiveConvertOptions{}); err == nil {
+			t.Fatalf("conversion silently omitted bundle %s: %+v", alias, result)
+		}
+		if _, err := planArchiveUploads(ctx, "cache", []string{compact}); err == nil {
+			t.Fatalf("upload silently omitted bundle %s", alias)
+		}
+		if cache, err := compactOpen(ctx, compact, previousMetadata, true); err == nil {
+			cache.Close()
+			t.Fatalf("resume ignored bundle %s", alias)
+		}
+		if err := os.Rename(alias, bundle); err != nil {
+			t.Fatal(err)
+		}
+	}
 	// An existing conf.xml identifies the destination without -output-type.
 	if result, err := ConvertArchive(ctx, regionB, compact, ArchiveConvertOptions{Append: true, Metadata: map[string]string{"name": "combined"}}); err != nil || result.Tiles != 2 || !result.Incremental {
 		t.Fatalf("Compact v2 append: result=%+v err=%v", result, err)
