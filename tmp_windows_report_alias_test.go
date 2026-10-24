@@ -32,6 +32,8 @@ func TestWindowsCompactReportAlias(t *testing.T) {
 		t.Fatalf("reproduction requires a short temporary path: %s", report)
 	}
 	viper.Set("output.failure_file", report)
+	absolute, absErr := filepath.Abs(report)
+	t.Logf("report absolute=%q err=%v", absolute, absErr)
 	err := task.Download()
 	entries, readErr := os.ReadDir(task.File)
 	var names []string
