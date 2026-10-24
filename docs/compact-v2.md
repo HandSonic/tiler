@@ -62,7 +62,7 @@ S3 新建缓存先在本地生成完整结果，再依次发布 `metadata.json`�
 
 同桶 S3 转换的输入、输出不得相互包含，例如 `cache/` 不能转到 `cache/copy/`；应使用独立前缀，例如 `cache-copy/`，以免新 bundle 混入原缓存。
 
-`upload` 识别显式传入的 Compact 根目录，上传其中全部标准元数据和 bundle，不按远端差异跳过已有包，也不上传失败清单或任意 JSON/XML。对象键为 `output.s3.prefix/conf.xml`、`output.s3.prefix/_alllayers/...`，不会再加目录基名。请用专用新前缀，或只更新来自同一缓存的对象；该命令不会删除远端旧 bundle。父目录的递归归档上传仍只查找 MBTiles/PMTiles，不自动发现嵌套 Compact 缓存。逐瓦片 S3 下载使用独立前缀；开启恢复或追加时会拒绝已有 Compact 标记的前缀。未开启恢复的纯 PUT 下载不增加读取权限要求，须由调用者保持目标前缀用途一致。
+`upload` 识别显式传入的 Compact 根目录，上传其中全部标准元数据和 bundle，不按远端差异跳过已有包，也不上传失败清单或任意 JSON/XML。上传要求根部元数据使用小写名称 `conf.xml`、`conf.cdi`、`metadata.json`，大小写变体会报错，避免在 Windows 本地可读却漏传到 S3。对象键为 `output.s3.prefix/conf.xml`、`output.s3.prefix/_alllayers/...`，不会再加目录基名。请用专用新前缀，或只更新来自同一缓存的对象；该命令不会删除远端旧 bundle。父目录的递归归档上传仍只查找 MBTiles/PMTiles，不自动发现嵌套 Compact 缓存。逐瓦片 S3 下载使用独立前缀；开启恢复或追加时会拒绝已有 Compact 标记的前缀。未开启恢复的纯 PUT 下载不增加读取权限要求，须由调用者保持目标前缀用途一致。
 
 ## MapProxy 配置和访问
 

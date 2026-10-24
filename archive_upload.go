@@ -247,6 +247,9 @@ func planArchiveUploads(ctx context.Context, prefix string, inputs []string) ([]
 			if compact {
 				metadata, allowed := compactCacheFile(filepath.ToSlash(relative))
 				if !allowed {
+					if metadata, _ := compactCacheFile(strings.ToLower(filepath.ToSlash(relative))); metadata {
+						return fmt.Errorf("Compact metadata path %q must use its canonical lowercase name", relative)
+					}
 					if strings.EqualFold(filepath.Ext(relative), ".bundle") {
 						return fmt.Errorf("invalid Compact bundle path %q", relative)
 					}

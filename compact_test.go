@@ -11,6 +11,7 @@ import (
 	"image/png"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -33,6 +34,20 @@ func TestCompactEmptyResumeAndCorruptIndex(t *testing.T) {
 	}
 	if err := cache.Close(); err != nil {
 		t.Fatal(err)
+	}
+	// Reserved metadata names must never be silently omitted from an upload,
+	// including on filesystems that open these names without matching case.
+	for _, name := range []string{"conf.xml", "conf.cdi", "metadata.json"} {
+		path, upper := filepath.Join(root, name), filepath.Join(root, strings.ToUpper(name))
+		if err := os.Rename(path, upper); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := planArchiveUploads(ctx, "cache", []string{root}); err == nil {
+			t.Errorf("upload silently omitted metadata with noncanonical name %s", filepath.Base(upper))
+		}
+		if err := os.Rename(upper, path); err != nil {
+			t.Fatal(err)
+		}
 	}
 	// A cache with a file occupying the layers directory must be rejected
 	// before opening it for further downloads.
