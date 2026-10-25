@@ -13,9 +13,9 @@ import (
 	"github.com/spf13/viper"
 )
 
-// Common Unix filesystems limit each filename component in bytes; Windows
-// counts UTF-16 units instead, checked by validateRelativeTilePath.
-const maxUnixFilenameBytes = 255
+// Common Linux filesystems limit filename components to 255 bytes. Do not
+// impose this byte limit on other platforms with different filename encoding.
+const maxLinuxFilenameBytes = 255
 
 func NewRepairTask(layers []Layer, tm TileMap, manifest *FailureManifest, manifestPath string) (*Task, error) {
 	return NewRepairTaskContext(context.Background(), layers, tm, manifest, manifestPath)
@@ -194,8 +194,8 @@ func (task *Task) setupFailureManifest() error {
 			if err := validateRelativeTilePath(name); err != nil {
 				return fmt.Errorf("invalid default failure manifest filename; shorten tm.name/output.name or set output.failure_file: %w", err)
 			}
-			if runtime.GOOS != "windows" && len(name) > maxUnixFilenameBytes {
-				return fmt.Errorf("default failure manifest filename exceeds %d bytes; shorten tm.name/output.name or set output.failure_file", maxUnixFilenameBytes)
+			if runtime.GOOS == "linux" && len(name) > maxLinuxFilenameBytes {
+				return fmt.Errorf("default failure manifest filename exceeds %d bytes; shorten tm.name/output.name or set output.failure_file", maxLinuxFilenameBytes)
 			}
 		}
 	}

@@ -675,10 +675,9 @@ func archiveWalkCompact(ctx context.Context, root string, visit archiveVisit) (m
 	if err != nil {
 		return nil, err
 	}
-	config, _, err := compactReadConfig(root)
-	if err != nil {
-		return nil, err
-	}
+	// compactReadMetadata derives these from the validated square cache grid.
+	maxZoom, _ := strconv.Atoi(metadata["maxzoom"])
+	tileSize, _ := strconv.Atoi(metadata["pixel_scale"])
 	base := filepath.Join(root, "_alllayers")
 	if err := validateOutputFilePath(root, root); err != nil {
 		return nil, err
@@ -717,7 +716,7 @@ func archiveWalkCompact(ctx context.Context, root string, visit archiveVisit) (m
 			return fmt.Errorf("invalid compact bundle path %s", rel)
 		}
 		z, err := strconv.Atoi(parts[0][1:])
-		if err != nil || z < 0 || z >= len(config.Cache.LODs) {
+		if err != nil || z < 0 || z > maxZoom {
 			return fmt.Errorf("compact bundle level is outside conf.xml")
 		}
 		matches := compactBundleName.FindStringSubmatch(parts[1])
@@ -783,7 +782,7 @@ func archiveWalkCompact(ctx context.Context, root string, visit archiveVisit) (m
 			if metadata["format"] != "" && !sameTileEncoding(metadata["format"], format) {
 				return fmt.Errorf("compact tile encoding differs from conf.xml")
 			}
-			if cfg.Width != config.Cache.Width || cfg.Height != config.Cache.Height {
+			if cfg.Width != tileSize || cfg.Height != tileSize {
 				return fmt.Errorf("compact tile dimensions differ from conf.xml")
 			}
 			if err := visit(z, x, y, body, format); err != nil {

@@ -202,7 +202,7 @@ timeout_seconds = 60
 
 也可在 `[output]` 设置 `failure_file = "output/failures.json"`。路径必须以 `.json` 结尾，不能占用输出自身或其父目录，也不能把元数据文件、MBTiles 数据库及其 `-wal`/`-journal`、Compact 配置或 bundle 当成报告目录。普通 Compact 层目录内的 `errors.json` 和缓存外的报告仍可使用，检查在创建输出前完成。S3 的清单保存在本地，不作为对象上传。
 
-自动生成的清单文件名也会在下载瓦片前检查长度，包括 MBTiles 的报告后缀和 Unix 文件系统上的 UTF-8 字节数。超限时应缩短 `tm.name` / `output.name`，或显式设置较短的 `output.failure_file`。
+自动生成的清单文件名也会在下载瓦片前检查长度，包括 MBTiles 的报告后缀和 Linux 常见文件系统上的 UTF-8 字节数；其他平台不套用这一字节上限。超限时应缩短 `tm.name` / `output.name`，或显式设置较短的 `output.failure_file`。
 
 ```sh
 ./tiler repair -c conf.toml -failures output/basemap.mbtiles.failures.json

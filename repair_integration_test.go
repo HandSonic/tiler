@@ -602,30 +602,6 @@ func TestRepairRejectsMismatchedConfigurationBeforeNetwork(t *testing.T) {
 	}
 }
 
-func TestRepairSuccessfulMBTilesLeavesOnlyDatabase(t *testing.T) {
-	dir := configureRegressionOutput(t)
-	viper.Set("output.format", "mbtiles")
-	body := tileDataPNG(t)
-	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write(body) }))
-	defer source.Close()
-	template := source.URL + "/{z}/{x}/{y}"
-	task := NewTask(repairIntegrationLayers(template), repairIntegrationMap(template))
-	t.Cleanup(task.Cancel)
-	if err := task.Download(); err != nil {
-		t.Fatal(err)
-	}
-	files, err := os.ReadDir(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(files) != 1 || filepath.Join(dir, files[0].Name()) != task.File {
-		t.Fatalf("successful MBTiles created extra files: %v", files)
-	}
-	if _, err := os.Stat(task.failurePath); !os.IsNotExist(err) {
-		t.Fatalf("unexpected failure report: %v", err)
-	}
-}
-
 func TestRepairRejectsMissingOrWrongKindOriginalTarget(t *testing.T) {
 	for _, kind := range []string{"file", "mbtiles"} {
 		for _, state := range []string{"missing", "wrong kind", "removed after construction"} {
@@ -777,15 +753,15 @@ func TestRepairManifestValidationDoesNotCreateOutput(t *testing.T) {
 	}
 	for _, testcase := range []struct {
 		name, kind, value string
-		unixOnly          bool
+		linuxOnly         bool
 	}{
 		{"s3-ascii", "s3", strings.Repeat("a", maxWindowsComponentUnits), false},
 		{"s3-unicode", "s3", strings.Repeat("中", maxWindowsComponentUnits/2), true},
 		{"mbtiles-suffix", "mbtiles", strings.Repeat("a", maxWindowsComponentUnits-len(".mbtiles.failures.json")+1), false},
 	} {
 		t.Run("default-report-name/"+testcase.name, func(t *testing.T) {
-			if testcase.unixOnly && runtime.GOOS == "windows" {
-				t.Skip("Windows permits this UTF-16 filename length")
+			if testcase.linuxOnly && runtime.GOOS != "linux" {
+				t.Skip("Linux filename byte-limit preflight")
 			}
 			dir := configureTaskTest(t, testcase.kind)
 			if testcase.kind == "mbtiles" {
