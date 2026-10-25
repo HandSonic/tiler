@@ -421,9 +421,9 @@ func (task *Task) SetupMBTileTables() error {
 				return err
 			}
 		}
-	}
-	if err := validateDownloadMBMetadata(metadata); err != nil {
-		return err
+		if err := validateDownloadMBMetadata(metadata); err != nil {
+			return err
+		}
 	}
 	if err := task.ctx.Err(); err != nil {
 		return err

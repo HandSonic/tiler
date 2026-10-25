@@ -42,31 +42,26 @@ func TestPMAuditUnknownAddressedCountIsValid(t *testing.T) {
 
 func TestPMAuditRejectsUnreachableLeafTiles(t *testing.T) {
 	tile := tileDataPNG(t)
-	for _, tt := range []struct {
-		name  string
-		root  []pm.EntryV3
-		child []pm.EntryV3
-		count uint64
-	}{
-		{"wrong first ID", []pm.EntryV3{{TileId: 6, RunLength: 0}}, []pm.EntryV3{{TileId: 5, Length: uint32(len(tile)), RunLength: 1}}, 1},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			leaf := pm.SerializeEntries(tt.child)
-			tt.root[0].Length = uint32(len(leaf))
-			filename := auditPMFixture(t, tt.root, leaf, tt.count)
-			_, err := archiveWalkPM(context.Background(), filename, func(z int, x, y uint32, body []byte, format string) error { return nil })
-			if err == nil || !strings.Contains(strings.ToLower(err.Error()), "director") {
-				t.Fatalf("unreachable/inconsistent leaf accepted: %v", err)
-			}
-		})
-	}
+	t.Run("wrong first ID", func(t *testing.T) {
+		leaf := pm.SerializeEntries([]pm.EntryV3{{TileId: 5, Length: uint32(len(tile)), RunLength: 1}})
+		root := []pm.EntryV3{{TileId: 6, Length: uint32(len(leaf))}}
+		filename := auditPMFixture(t, root, leaf, 1)
+		_, err := archiveWalkPM(context.Background(), filename, func(z int, x, y uint32, body []byte, format string) error { return nil })
+		if err == nil || !strings.Contains(strings.ToLower(err.Error()), "director") {
+			t.Fatalf("unreachable/inconsistent leaf accepted: %v", err)
+		}
+	})
 	first := pm.SerializeEntries([]pm.EntryV3{{TileId: 5, Length: uint32(len(tile)), RunLength: 3}})
-	second := pm.SerializeEntries([]pm.EntryV3{{TileId: 8, Length: uint32(len(tile)), RunLength: 1}})
+	second := pm.SerializeEntries([]pm.EntryV3{{TileId: 7, Length: uint32(len(tile)), RunLength: 1}})
 	root := []pm.EntryV3{{TileId: 5, Length: uint32(len(first))}, {TileId: 7, Offset: uint64(len(first)), Length: uint32(len(second))}}
 	filename := auditPMFixture(t, root, append(first, second...), 4)
-	_, err := archiveWalkPM(context.Background(), filename, func(z int, x, y uint32, body []byte, format string) error { return nil })
-	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "director") {
-		t.Fatalf("leaf run crossed its parent directory boundary: %v", err)
+	visited := 0
+	_, err := archiveWalkPM(context.Background(), filename, func(z int, x, y uint32, body []byte, format string) error {
+		visited++
+		return nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "tile run crosses its directory entry range") || visited != 0 {
+		t.Fatalf("leaf run crossed its parent directory boundary: visited=%d, err=%v", visited, err)
 	}
 }
 
