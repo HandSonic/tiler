@@ -173,8 +173,8 @@ func TestTaskDownloadS3AccessDenied(t *testing.T) {
 	defer sink.Close()
 	viper.Set("output.s3.endpoint", sink.URL)
 	task := taskForTest(source.URL, PNG, orb.Collection{orb.Point{-135, 45}})
-	if err := task.Download(); err == nil || !strings.Contains(err.Error(), "AccessDenied") {
-		t.Fatalf("Download error = %v; want the S3 AccessDenied error", err)
+	if err := task.Download(); err == nil || !strings.Contains(err.Error(), "AccessDenied") || !strings.Contains(err.Error(), "403") {
+		t.Fatalf("Download error = %v; want the S3 AccessDenied/403 error", err)
 	}
 }
 

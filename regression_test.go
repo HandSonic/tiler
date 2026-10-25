@@ -322,7 +322,7 @@ func TestResumeSkipsExistingTilesAndKeepsOutputPath(t *testing.T) {
 	}
 }
 
-func TestFileSaveFailureCleansTemporaryFile(t *testing.T) {
+func TestFileSaveRejectsDirectoryAtTilePathBeforeWriting(t *testing.T) {
 	configureRegressionOutput(t)
 	task := newRegressionTask(t, "http://example.test")
 	task.File = t.TempDir()
@@ -335,7 +335,7 @@ func TestFileSaveFailureCleansTemporaryFile(t *testing.T) {
 	}
 	leftovers, err := filepath.Glob(filepath.Join(task.File, "0", "0", ".tile-*"))
 	if err != nil || len(leftovers) != 0 {
-		t.Fatalf("temporary files after save failure = %v, %v", leftovers, err)
+		t.Fatalf("rejected tile path created temporary files = %v, %v", leftovers, err)
 	}
 }
 

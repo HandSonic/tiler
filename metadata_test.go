@@ -96,7 +96,7 @@ func TestSaveFileMetadataReplacesExistingFile(t *testing.T) {
 	assertNoMetadataTemps(t, task.File)
 }
 
-func TestSaveFileMetadataFailureCleansTemporaryFile(t *testing.T) {
+func TestSaveFileMetadataRejectsDirectoryBeforeWriting(t *testing.T) {
 	task := fileMetadataTask(t.TempDir())
 	path := filepath.Join(task.File, "metadata.json")
 	if err := os.Mkdir(path, 0700); err != nil {

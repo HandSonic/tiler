@@ -139,25 +139,6 @@ func TestS3Save(t *testing.T) {
 	}
 }
 
-func TestS3SaveAccessDenied(t *testing.T) {
-	configureS3Test(t)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/xml")
-		w.WriteHeader(http.StatusForbidden)
-		io.WriteString(w, `<Error><Code>AccessDenied</Code><Message>Access Denied</Message><RequestId>test-request</RequestId></Error>`)
-	}))
-	defer server.Close()
-	viper.Set("output.s3.endpoint", server.URL)
-	out, err := newS3Output(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	err = out.saveContext(context.Background(), Tile{T: maptile.Tile{Z: 0}, C: []byte("tile")}, PNG)
-	if err == nil || !strings.Contains(err.Error(), "AccessDenied") || !strings.Contains(err.Error(), "403") {
-		t.Fatalf("save error = %v; want an S3 AccessDenied/403 error", err)
-	}
-}
-
 func TestNewS3OutputConfiguration(t *testing.T) {
 	tests := []struct {
 		name    string

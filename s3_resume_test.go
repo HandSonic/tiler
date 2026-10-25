@@ -121,17 +121,31 @@ func TestS3ResumeDoesNotTreatAccessDeniedAsMissing(t *testing.T) {
 	viper.Set("output.format", "s3")
 	viper.Set("output.resume", true)
 	viper.Set("task.workers", 1)
-	var downloads int32
+	var downloads, checks int32
 	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { atomic.AddInt32(&downloads, 1) }))
 	defer source.Close()
-	destination := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusForbidden) }))
+	destination := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/test-bucket/conf.xml", "/test-bucket/metadata.json":
+			w.WriteHeader(http.StatusNotFound)
+		case "/test-bucket/0/0/0.png":
+			if r.Method != http.MethodHead {
+				t.Errorf("unexpected tile request: %s %s", r.Method, r.URL.Path)
+			}
+			atomic.AddInt32(&checks, 1)
+			w.WriteHeader(http.StatusForbidden)
+		default:
+			t.Errorf("unexpected S3 path: %s", r.URL.Path)
+			w.WriteHeader(http.StatusBadRequest)
+		}
+	}))
 	defer destination.Close()
 	viper.Set("output.s3.endpoint", destination.URL)
 	err := newRegressionTask(t, source.URL).Download()
 	if err == nil || !strings.Contains(err.Error(), "403") {
 		t.Fatalf("want HEAD 403, got %v", err)
 	}
-	if downloads != 0 {
-		t.Fatal("downloaded before confirming whether S3 object exists")
+	if downloads != 0 || checks != 1 {
+		t.Fatalf("tile HEAD 403 must stop before source download: downloads=%d checks=%d", downloads, checks)
 	}
 }

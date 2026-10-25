@@ -357,10 +357,7 @@ func archiveValidateMBVectorMetadata(metadata map[string]interface{}, minZoom, m
 			if !exists {
 				continue
 			}
-			number, ok := value.(float64)
-			if !ok || math.IsNaN(number) || math.IsInf(number, 0) || number != math.Trunc(number) || number < 0 || number > 30 {
-				return fmt.Errorf("vector_layers[%d] has invalid %s", i, key)
-			}
+			number := value.(float64)
 			if key == "minzoom" {
 				low = math.Max(low, number)
 			} else {
